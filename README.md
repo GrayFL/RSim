@@ -33,6 +33,8 @@ async with Runtime(sensor):
 
 附带 [Notebook 实验示例](examples/prototype.ipynb)，包含嵌套进程和硬件组合。运行前应按使用环境调整 kernel、设备配置及绘图依赖。普通脚本可以在程序入口使用 `asyncio.run()`；Notebook 直接 `await` 即可。
 
+[D435 Notebook](examples/d435.ipynb) 演示共享彩色与深度采集、等待新帧、时间戳回查、图像显示和数据保存。
+
 ## 使用硬件
 
 `Camera` 提供 UVC 图像，`RobinW` 提供点云，`D435` 提供 RealSense 图像流。设备路径、雷达地址及相机序列号由调用方配置提供；不能假定默认值适用于所有设备部署。例如，配置好 `camera_device` 和 `lidar_ip` 后：
@@ -51,6 +53,8 @@ async with Runtime(rig):
 ```
 
 接口返回图像数组或带有 `x/y/z/intensity` 等字段的结构化点数组，不要求上层依赖 ROS message 类型。UVC 接口只提供其视频通道；深度流需要相应设备适配与驱动支持。
+
+`D435(stream="color")` 与 `D435(stream="depth")` 复用同一个 RGB-D 采集进程，需要环境中安装 `realsense2_camera`。可传入 `serial`、`depth_profile`、`color_profile`、`history` 和驱动日志路径 `log_path`；两路 profile 格式均为 `宽x高x帧率`，默认 `640x480x15`，应根据设备及 USB 连接能力选择。同一相机的调用者须使用一致的序列号写法、profile 和 history，冲突配置会被拒绝。返回的是未做像素配准、未承诺曝光同步的原始彩色与深度流；`get(after=...)` 不会将重复的组合快照当作新图像。
 
 ## 像积木一样组合
 

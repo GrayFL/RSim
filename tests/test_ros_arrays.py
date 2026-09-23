@@ -29,3 +29,14 @@ def test_image_padding_channels_and_no_copy():
     assert np.shares_memory(image.pixels, np.frombuffer(raw, dtype="u1"))
     with pytest.raises(ValueError):
         image.pixels[0, 0, 0] = 4
+
+
+def test_depth_image_padding_endianness_and_invalid_zero():
+    raw = bytearray(16)
+    expected = np.ndarray((2, 3), dtype=">u2", buffer=raw, strides=(8, 2))
+    expected[:] = [[0, 1000, 2000], [3000, 4000, 65535]]
+    image = image_array(NS(encoding="16UC1", height=2, width=3, step=8, data=raw,
+                           is_bigendian=True, header=NS(frame_id="depth")))
+    np.testing.assert_array_equal(image.pixels, expected)
+    assert np.shares_memory(image.pixels, expected)
+    assert not image.pixels.flags.writeable
