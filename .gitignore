@@ -1,0 +1,13 @@
+__pycache__/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+assets
+AGENTS.md
+PROJECT.md
+.*
+!.gitignore
+
+# Local development context; not part of the published documentation.
+/PROJECT.md
