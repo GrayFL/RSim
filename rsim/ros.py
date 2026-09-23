@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 import os
 import re
@@ -15,24 +14,8 @@ import uuid
 import numpy as np
 
 from .core import Sensor, SensorError
-
-
-@dataclass(frozen=True)
-class PointCloud:
-    points: np.ndarray
-    frame_id: str
-
-    @property
-    def xyz(self):
-        # Structured selection retains original point stride and backing buffer.
-        return self.points[["x", "y", "z"]]
-
-
-@dataclass(frozen=True)
-class Image:
-    pixels: np.ndarray
-    encoding: str
-    frame_id: str
+from .model import Image, PointCloud
+from ._device_config import d435_profile
 
 
 def pointcloud_array(msg):
@@ -302,17 +285,6 @@ class RobinW(RosSensor):
             history=history
             )
 
-
-def d435_profile(value):
-    """Canonical profile strings keep equivalent shared-source settings identical."""
-    pattern = r"\s*(\d+)\s*[xX,]\s*(\d+)\s*[xX,]\s*(\d+)\s*"
-    match = re.fullmatch(pattern,
-                            value) if isinstance(value, str) else None
-    if match is None or any(int(n) <= 0 for n in match.groups()):
-        raise ValueError(
-            "camera profile must be WIDTHxHEIGHTxFPS with positive integers"
-            )
-    return "x".join(str(int(n)) for n in match.groups())
 
 
 class D435(RosSensor):

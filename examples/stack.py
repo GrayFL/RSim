@@ -4,7 +4,8 @@ import json
 import os
 from pathlib import Path
 
-from rsim import Bundle, Camera, Map, ProcessSensor, RobinW, Runtime
+from rsim import Bundle, Map, ProcessSensor, RobinW, Runtime
+from rsim.drivers import Camera, RobinW as RobinWDriver
 from examples.process_robin import summarize
 
 
@@ -20,7 +21,7 @@ def processing():
 
 
 async def main():
-    lidar = RobinW()
+    lidar = RobinWDriver()
     stack = Bundle(
         camera=Camera(),
         lidar=lidar,

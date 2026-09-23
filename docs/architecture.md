@@ -7,7 +7,7 @@ flowchart LR
     CameraHW[UVC 相机] --> CameraSource[共享源进程：UVC 发布 + ROS Image 订阅]
     LidarHW[Robin W] --> Driver[原生 Seyond ROS 驱动]
     Driver --> LidarSource[共享源进程：ROS PointCloud2 订阅]
-    CameraSource -->|DDS 描述信息 + 只读 mmap| Main[Notebook asyncio：Bundle / get]
+    CameraSource -->|同一 domain：DDS 描述信息 + 只读 mmap| Main[无 ROS 的 Notebook asyncio：Bundle / get]
     LidarSource -->|DDS 描述信息 + 只读 mmap| Main
     LidarSource -->|同一份点云映射| Compute[子进程 asyncio：Map / 体素计算]
     Compute -->|DDS 描述信息 + 只读 mmap| Main
@@ -19,11 +19,15 @@ flowchart LR
 
 `Sensor` 表示数据与生命周期，`Runtime` 负责拥有关系。`Bundle`、`Map` 是普通 Sensor，没有特殊运行后端。`ProcessSensor(factory)` 将工厂创建的整棵图放到子进程；内部同样使用 Runtime，可以再次包含 ProcessSensor 或 SharedSensor。
 
+应用通过 `rsim` 的设备工厂连接；驱动通过 `rsim.drivers` 启动。`Frame`、`Image` 和 `PointCloud` 位于不依赖 ROS/DDS 的 `rsim.model`。应用与驱动可以使用不同 Python 版本；工厂只在创建源的环境中执行，不发送给订阅者。运行方式和迁移说明见 [DDS 文档](dds.md)。
+
 `Reference(target)` 不拥有目标，不递归启动目标；用于同一 Runtime 内的反向/共享引用。拥有关系的环与数据反馈环分开处理：前者拒绝，后者必须由业务处理初始值、超时和时序。
 
 ## asyncio 与 ROS 执行器
 
-每个 Runtime 的 ROS 节点共用一个 `RosContext`，以限速协程调用 `SingleThreadedExecutor.spin_once(timeout_sec=0)`。ROS 回调只做短入队；消息转换、发布帧、用户处理通过 Sensor.task 调度。队列和历史均有界。
+ROS 驱动接入图中的节点共用 `RosContext`，以限速协程调用 `SingleThreadedExecutor.spin_once(timeout_sec=0)`。ROS 回调只做短入队；消息转换、发布帧、用户处理通过 Sensor.task 调度。队列和历史均有界。
+
+通用进程封装使用独立的 `DescriptorTransport`。默认原生 Cyclone DDS 后端通过有界 `DataReader.take()` 轮询；可选 ROS 后端将 rclpy 的创建、发布、订阅和销毁集中封装。后端均由 Sensor 任务控速并受 WatchDog 管理。无 ROS 应用只加载原生后端，不创建 rclpy 节点。
 
 两种调度器的 Future/等待机制不同，因此原型采用明确的轮询桥接，便于控制频率并在 Notebook 已有事件循环中运行。实现参考 [rclpy 执行器源码](https://github.com/ros2/rclpy/blob/jazzy/rclpy/rclpy/executors.py)；该链接固定到设计参考版本，使用其他版本时需核对接口兼容性。
 
@@ -33,7 +37,7 @@ flowchart LR
 
 ROS 2 常规 Python Image/PointCloud2 发布不能直接等同于 loan。Fast DDS 的 [Data Sharing](https://fast-dds.docs.eprosima.com/en/stable/fastdds/transport/datasharing.html) 还有类型、内存与端点配置条件；[ROS loan 设计](https://github.com/ros2/design/blob/gh-pages/articles/zero_copy.md) 涉及中间件及客户端支持。本原型使用以下混合通道：
 
-- ROS/DDS String topic 发布小型、JSON 编码的帧描述信息，可靠且 transient-local，支持发现后读取最新帧。
+- 同一 DDS domain 的 String topic 发布小型、JSON 编码的帧描述信息，可靠且 transient-local，支持发现后读取最新帧。原生和 rclpy 后端使用相同 topic、类型与 XCDR1 编码，直接互通，无需另起 domain 或转发桥。
 - 数组使用 `/dev/shm` 中的 `.npy` 文件，保留 dtype、shape 和结构化点记录；读者 `np.load(..., mmap_mode="r")`。
 - 文件路径含独立帧代号，不重复写入旧文件。读者验证路径在该源目录下，再打开只读映射。
 - 已共享的完整 memmap 跨层转发使用硬链接；`allocate` 允许计算直接写入共享输出，提交时不再复制 payload。
@@ -55,6 +59,7 @@ ROS 2 常规 Python Image/PointCloud2 发布不能直接等同于 loan。Fast DD
 | 共享源最后一个客户离开 | 监督进程在选举锁下关闭监听、停止 worker、删除帧文件 |
 | 不同客户同时创建同一源 | 文件锁串行化创建/连接；共享一个 source worker 和 DDS 描述信息 topic |
 | 同一源 key 配置不同 | 拒绝连接，避免悄悄复用不同参数的设备 |
+| 只连接的客户端发现源不存在 | 报告源未启动，不在应用环境中反序列化或运行驱动工厂 |
 | 不同 DDS domain 请求同一物理设备 | 独立的物理设备锁拒绝第二次硬件启动；使用者应统一 domain |
 
 原生驱动使用 Linux `PR_SET_PDEATHSIG`，避免 Python 采集进程突然消失后留下驱动。监督进程独立于计算进程；不能用同一条被计算阻塞的 asyncio 循环来保障其自身退出。

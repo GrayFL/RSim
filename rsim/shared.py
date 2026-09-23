@@ -46,7 +46,7 @@ class SharedStore:
         Ordinary producer buffers only coexist during this ingress copy, rather
         than leaving a second payload copy in the source's bounded history.
         """
-        from .ros import PointCloud, Image
+        from .model import PointCloud, Image
         memo = {} if memo is None else memo
         if isinstance(data, np.ndarray):
             if id(data) in memo:
@@ -96,7 +96,7 @@ class SharedStore:
         return array
 
     def _encode(self, data, directory):
-        from .ros import PointCloud, Image
+        from .model import PointCloud, Image
         if isinstance(data, np.ndarray):
             if data.dtype.hasobject:
                 raise TypeError("object arrays cannot be shared")
@@ -139,7 +139,7 @@ class SharedStore:
 
 
 def decode(data, allowed_directory):
-    from .ros import PointCloud, Image
+    from .model import PointCloud, Image
     kind = data["type"]
     if kind == "array":
         path = Path(data["path"]).resolve()

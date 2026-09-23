@@ -3,7 +3,8 @@ import asyncio
 import json
 from pathlib import Path
 
-from rsim import Camera, Runtime
+from rsim import Runtime
+from rsim.drivers import Camera
 
 
 async def main():

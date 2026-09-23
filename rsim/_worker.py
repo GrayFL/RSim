@@ -10,22 +10,20 @@ import traceback
 import cloudpickle
 
 from .core import Runtime, Sensor
-from .process import descriptor_qos
-from .ros import RosContext
+from .transport import DescriptorTransport, TransportConfig
 from .shared import SharedStore, current_store
 
 
 class Export(Sensor):
     def __init__(self, source, directory, config):
-        super().__init__(source, RosContext(), history=1)
+        super().__init__(source, DescriptorTransport(TransportConfig(**config["transport"])), history=1)
         self.store = SharedStore(directory / "frames", history=config["history"])
         self.topic = config["topic"]
         self.previous = 0
         self.latest = None
 
     async def open(self):
-        from std_msgs.msg import String
-        self.publisher = self.children[1].node.create_publisher(String, self.topic, descriptor_qos())
+        self.publisher = self.children[1].publisher(self.topic)
         self.task("export", self.export, hz=200)
         self.task("announce", self.announce, hz=20)
 
@@ -36,13 +34,12 @@ class Export(Sensor):
         await self.announce()
 
     async def announce(self):
-        from std_msgs.msg import String
         if self.latest is not None:
-            self.publisher.publish(String(data=json.dumps(self.latest, allow_nan=False)))
+            self.publisher.publish(json.dumps(self.latest, allow_nan=False))
 
     async def close(self):
         if hasattr(self, "publisher"):
-            self.children[1].node.destroy_publisher(self.publisher)
+            self.publisher.close()
         self.store.close()
 
 
@@ -52,6 +49,9 @@ async def run(directory):
     loop.add_signal_handler(signal.SIGTERM, stopped.set)
     loop.add_signal_handler(signal.SIGINT, stopped.set)
     config = json.loads((directory / "config.json").read_text())
+    # Descendant factories and ROS ingress inherit the same domain/backend.
+    os.environ["ROS_DOMAIN_ID"] = str(config["transport"]["domain_id"])
+    os.environ["RSIM_TRANSPORT"] = config["transport"]["backend"]
     sys.path[:] = config["sys_path"]
     factory = cloudpickle.loads((directory / "factory.pkl").read_bytes())
     source = factory()

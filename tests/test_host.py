@@ -5,7 +5,7 @@ import uuid
 import numpy as np
 import pytest
 
-from rsim import Runtime
+from rsim import Runtime, SensorError, TransportConfig
 from rsim.host import SharedSensor
 from rsim.synthetic import CounterArray
 
@@ -44,4 +44,37 @@ def test_shared_source_survives_first_owner_and_maps_one_inode():
             while second.directory.exists():
                 await asyncio.sleep(0.05)
         np.testing.assert_array_equal(a.data, b.data)
+    asyncio.run(run())
+
+
+def test_connect_only_never_launches_a_missing_source():
+    async def run():
+        client = SharedSensor(key="absent:" + uuid.uuid4().hex)
+        with pytest.raises(SensorError, match="start its provider first"):
+            async with Runtime(client):
+                pass
+        assert client.directory is None and client.process is None
+        assert not client._tasks
+    asyncio.run(run())
+
+
+def test_connect_only_checks_configuration_and_domain():
+    async def run():
+        key = "domain:" + uuid.uuid4().hex
+        config = TransportConfig("cyclonedds", 74)
+        owner = SharedSensor(lambda: CounterArray(), key=key, transport=config)
+        async with Runtime(owner):
+            await owner.get(timeout=15)
+            wrong_config = SharedSensor(key=key, version="other", transport=config)
+            with pytest.raises(ValueError, match="conflicting"):
+                async with Runtime(wrong_config):
+                    pass
+            wrong_domain = SharedSensor(key=key, transport=TransportConfig("cyclonedds", 75))
+            with pytest.raises(SensorError, match="not running"):
+                async with Runtime(wrong_domain):
+                    pass
+            attached = SharedSensor(key=key, transport=config)
+            async with Runtime(attached):
+                await attached.get(timeout=10)
+                assert attached.worker_pid == owner.worker_pid
     asyncio.run(run())

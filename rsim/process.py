@@ -9,23 +9,19 @@ from pathlib import Path
 import sys
 import tempfile
 import uuid
+from dataclasses import asdict
 
 import cloudpickle
 
 from .core import Sensor, SensorError
-from .ros import RosContext
 from .shared import decode
-
-
-def descriptor_qos():
-    from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
-    return QoSProfile(depth=16, reliability=ReliabilityPolicy.RELIABLE,
-                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
+from .transport import DescriptorTransport, transport_config
 
 
 class ProcessSensor(Sensor):
-    def __init__(self, factory, *, history=16, hz=200):
-        super().__init__(RosContext(), history=history)
+    def __init__(self, factory, *, history=16, hz=200, transport=None):
+        self.transport = transport_config(transport)
+        super().__init__(DescriptorTransport(self.transport), history=history)
         self.factory, self.hz = factory, hz
         self.process = None
         self.directory = None
@@ -37,7 +33,6 @@ class ProcessSensor(Sensor):
         self._log = None
 
     async def open(self):
-        from std_msgs.msg import String
         self.pending.clear()
         self._remote_sequence = 0
         self.directory = Path(tempfile.mkdtemp(prefix=f"rsim-{os.getuid()}-", dir="/dev/shm"))
@@ -45,9 +40,9 @@ class ProcessSensor(Sensor):
         (self.directory / "factory.pkl").write_bytes(cloudpickle.dumps(self.factory))
         (self.directory / "config.json").write_text(json.dumps({
             "history": self._history.maxlen, "topic": topic,
+            "transport": asdict(self.transport),
             "sys_path": [str(Path(p).resolve()) for p in sys.path]}))
-        self.subscription = self.children[0].node.create_subscription(
-            String, topic, lambda msg: self.pending.append(msg.data), descriptor_qos())
+        self.subscription = self.children[0].subscribe(topic, self.pending.append)
         lease_read, self._lease = os.pipe()
         self._log = (self.directory / "worker.log").open("w")
         try:
@@ -95,7 +90,8 @@ class ProcessSensor(Sensor):
                 self.process.terminate()
                 await asyncio.wait_for(self.process.wait(), 7)
         if self.subscription is not None:
-            self.children[0].node.destroy_subscription(self.subscription)
+            self.subscription.close()
+            self.subscription = None
         if self._log is not None:
             self._log.close()
         if self.directory is not None:

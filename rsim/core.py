@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from dataclasses import dataclass, field
 import math
 import time
 from typing import Any, Awaitable, Callable
+
+from .model import Frame
 
 
 class SensorError(RuntimeError):
@@ -15,15 +16,6 @@ class SensorError(RuntimeError):
 
 class HistoryMiss(LookupError):
     pass
-
-
-@dataclass(frozen=True)
-class Frame:
-    data: Any
-    stamp_ns: int
-    clock: str
-    received_ns: int = field(default_factory=time.time_ns)
-    sequence: int = 0
 
 
 class Metronome:

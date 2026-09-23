@@ -12,11 +12,12 @@ import subprocess
 import sys
 import tempfile
 import threading
+from dataclasses import asdict
 
 import cloudpickle
 
 from .core import SensorError
-from .process import ProcessSensor, descriptor_qos
+from .process import ProcessSensor
 
 
 def registry_directory():
@@ -33,17 +34,18 @@ class SharedSensor(ProcessSensor):
 
     All clients with a key must specify the same version and history. Only the
     first client's factory runs. Use a configuration digest for version when a
-    factory has parameters. Factories are trusted local Python code.
+    factory has parameters. Omitting factory makes this a connection-only client:
+    it never starts a source or loads a provider's factory. Factories are trusted
+    local Python code, serialized only inside the environment that launches them.
     """
 
-    def __init__(self, factory, *, key, version="1", history=16, hz=200):
-        super().__init__(factory, history=history, hz=hz)
+    def __init__(self, factory=None, *, key, version="1", history=16, hz=200, transport=None):
+        super().__init__(factory, history=history, hz=hz, transport=transport)
         self.source_key, self.version = key, version
         self._reader = self._writer = None
 
     async def open(self):
-        from std_msgs.msg import String
-        identity = f"{os.environ.get('ROS_DOMAIN_ID', '0')}:{self.source_key}"
+        identity = f"{self.transport.domain_id}:{self.source_key}"
         digest = hashlib.sha256(identity.encode()).hexdigest()[:32]
         registry = registry_directory()
         lock_path = registry / (digest + ".lock")
@@ -73,6 +75,9 @@ class SharedSensor(ProcessSensor):
                         raise ValueError(f"conflicting shared source configuration: {self.source_key}")
                     state = candidate
             if state is None:
+                if self.factory is None:
+                    raise SensorError(f"source is not running in DDS domain {self.transport.domain_id}: "
+                                      f"{self.source_key}; start its provider first")
                 state = self._launch(signature, socket_path, lock_path, state_path)
                 self._reader, self._writer = await asyncio.open_connection(sock=self._initial_client)
                 self._initial_client = None
@@ -80,8 +85,7 @@ class SharedSensor(ProcessSensor):
             self.directory = Path(state["directory"])
             self._remote_sequence = 0
             self.pending.clear()
-            self.subscription = self.children[0].node.create_subscription(
-                String, state["topic"], lambda msg: self.pending.append(msg.data), descriptor_qos())
+            self.subscription = self.children[0].subscribe(state["topic"], self.pending.append)
             self.task("receive", self.receive, hz=self.hz)
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
@@ -101,6 +105,7 @@ class SharedSensor(ProcessSensor):
             (directory / "factory.pkl").write_bytes(cloudpickle.dumps(self.factory))
             (directory / "config.json").write_text(json.dumps({
                 "history": self._history.maxlen, "topic": topic,
+                "transport": asdict(self.transport),
                 "sys_path": [str(Path(p).resolve()) for p in sys.path]}))
             state = {"directory": str(directory), "topic": topic, "signature": signature}
             temporary = state_path.with_suffix(".tmp")
@@ -141,6 +146,6 @@ class SharedSensor(ProcessSensor):
             initial.close()
             self._initial_client = None
         if self.subscription is not None:
-            self.children[0].node.destroy_subscription(self.subscription)
+            self.subscription.close()
             self.subscription = None
         self.pending.clear()
