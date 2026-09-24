@@ -2,7 +2,7 @@
 import json
 
 from ._device_config import d435_config, d435_version
-from .core import Sensor
+from .core import Sensor, SensorError
 from .host import SharedSensor
 
 
@@ -31,6 +31,10 @@ class _ImageStream(Sensor):
     async def select(self):
         frame = await self.children[0].get(after=self.previous)
         self.previous = frame.sequence
+        if self.stream not in frame.data:
+            raise SensorError(
+                f"D435 provider has no enabled {self.stream} stream"
+                )
         sample = frame.data[self.stream]
         identity = sample["clock"], sample["stamp_ns"], sample["received_ns"]
         if identity == self.identity:
@@ -62,7 +66,15 @@ def D435(
     return _d435_view(config, stream, history, transport=transport)
 
 
-def _d435_view(config, stream, history, *, factory=None, transport=None):
+def _d435_view(
+        config,
+        stream,
+        history,
+        *,
+        factory=None,
+        transport=None,
+        provider_version=None
+    ):
     if stream not in ("color", "depth"):
         raise ValueError("stream must be color or depth")
     depth_fps = int(config["depth_profile"].split("x")[-1])
@@ -72,7 +84,8 @@ def _d435_view(config, stream, history, *, factory=None, transport=None):
         key=f"d435:{config['serial']}",
         version=d435_version(config),
         history=history,
-        transport=transport
+        transport=transport,
+        provider_version=provider_version
         )
     return _ImageStream(
         shared,

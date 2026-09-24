@@ -37,11 +37,16 @@ class SharedSensor(ProcessSensor):
     factory has parameters. Omitting factory makes this a connection-only client:
     it never starts a source or loads a provider's factory. Factories are trusted
     local Python code, serialized only inside the environment that launches them.
+
+    provider_version optionally identifies driver-only settings: competing
+    providers must match it, while connection-only clients need not know it.
     """
 
-    def __init__(self, factory=None, *, key, version="1", history=16, hz=200, transport=None):
+    def __init__(self, factory=None, *, key, version="1", history=16, hz=200, transport=None,
+                 provider_version=None):
         super().__init__(factory, history=history, hz=hz, transport=transport)
         self.source_key, self.version = key, version
+        self.provider_version = provider_version
         self._reader = self._writer = None
 
     async def open(self):
@@ -73,6 +78,9 @@ class SharedSensor(ProcessSensor):
                     await asyncio.wait_for(reader.readexactly(1), 3)
                     if candidate["signature"] != signature:
                         raise ValueError(f"conflicting shared source configuration: {self.source_key}")
+                    if (self.factory is not None
+                            and candidate.get("provider_version") != self.provider_version):
+                        raise ValueError(f"conflicting shared provider configuration: {self.source_key}")
                     state = candidate
             if state is None:
                 if self.factory is None:
@@ -107,7 +115,8 @@ class SharedSensor(ProcessSensor):
                 "history": self._history.maxlen, "topic": topic,
                 "transport": asdict(self.transport),
                 "sys_path": [str(Path(p).resolve()) for p in sys.path]}))
-            state = {"directory": str(directory), "topic": topic, "signature": signature}
+            state = {"directory": str(directory), "topic": topic, "signature": signature,
+                     "provider_version": self.provider_version}
             temporary = state_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(state))
             temporary.replace(state_path)

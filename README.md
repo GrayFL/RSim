@@ -61,6 +61,10 @@ async with Runtime(rig):
 
 `D435(stream="color")` 与 `D435(stream="depth")` 复用同一个 RGB-D 采集进程；只有驱动环境需要 `realsense2_camera`。两端均接受 `serial`、`depth_profile`、`color_profile`、`history` 和 `transport`，驱动工厂另接受日志路径 `log_path`。两路 profile 格式为 `宽x高x帧率`，默认 `640x480x15`，应根据设备及 USB 连接能力选择。同一相机的调用者须使用一致的序列号写法、profile 和 history，冲突配置会被拒绝。返回的是未做像素配准、未承诺曝光同步的原始彩色与深度流；`get(after=...)` 不会将重复的组合快照当作新图像。
 
+驱动端 `D435`、`RobinW` 还支持任意原生节点参数，例如 `D435(parameters={"publish_tf": False}, ros_args=["--log-level", "warn"])`。CLI 对应 `python -m rsim.drivers d435 --ros-args -p publish_tf:=false --log-level warn`，也支持 `--params-file` 和话题 remap。覆盖顺序、单流模式和两种调用方式见 [驱动参数说明](docs/drivers.md)。
+
+ROS1 底盘可通过 `Chassis(SSHConfig(...), ...)` 跨机器读取 IMU、里程计、2D 雷达并发送速度；远端兼容 Python 2.7，主机无需 ROS1。可选 `ChassisROS2` 提供标准 ROS2 / DDS 双向话题。部署、生命周期和零速测试见 [ROS1 跨机器通信](docs/ros1.md)，可运行示例为 `python -m examples.chassis --help`。
+
 ## 像积木一样组合
 
 ```python

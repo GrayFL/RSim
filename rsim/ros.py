@@ -5,7 +5,6 @@ import asyncio
 from collections import deque
 from pathlib import Path
 import os
-import re
 import signal
 import sys
 import time
@@ -15,7 +14,8 @@ import numpy as np
 
 from .core import Sensor, SensorError
 from .model import Image, PointCloud
-from ._device_config import d435_profile
+from ._driver_config import d435_setup, robin_setup
+from ._ros_args import RosArguments
 
 
 def pointcloud_array(msg):
@@ -127,21 +127,25 @@ class Driver(Sensor):
             self,
             package,
             executable,
-            parameters,
+            parameters=None,
             *,
             key,
             log_path=None,
-            remappings=None
+            remappings=None,
+            ros_args=None
         ):
         super().__init__(key=key, history=1)
-        self.package, self.executable, self.parameters = package, executable, parameters
+        self.package, self.executable = package, executable
+        self.options = parameters if isinstance(parameters, RosArguments) else RosArguments(
+            parameters, ros_args, remappings)
+        self.parameters = self.options.parameters
         self.log_path = log_path
-        self.remappings = dict(remappings or {})
+        self.remappings = self.options.remappings
         self.process = self._log = None
         self._device_lease = None
 
     def configuration(self):
-        return super().configuration(), self.package, self.executable, self.parameters, self.remappings
+        return super().configuration(), self.package, self.executable, self.options.signature()
 
     async def open(self):
         from ament_index_python.packages import get_package_prefix
@@ -149,14 +153,8 @@ class Driver(Sensor):
         executable = Path(
             get_package_prefix(self.package)
             ) / "lib" / self.package / self.executable
+        args = [str(executable), *self.options.arguments()]
         self._device_lease = acquire_device(self.key)
-        args = [str(executable), "--ros-args"]
-        for name, value in self.remappings.items():
-            args.extend(["-r", f"{name}:={value}"])
-        for name, value in self.parameters.items():
-            if isinstance(value, bool):
-                value = str(value).lower()
-            args.extend(["-p", f"{name}:={value}"])
         if self.log_path:
             self._log = open(self.log_path, "a")
         self.process = await asyncio.create_subprocess_exec(
@@ -267,13 +265,16 @@ class RobinW(RosSensor):
             start_driver=True,
             topic="/iv_points",
             history=16,
-            log_path=None
+            log_path=None,
+            parameters=None,
+            ros_args=None,
+            _setup=None
         ):
+        setup = _setup or robin_setup(ip, topic, parameters, ros_args)
+        ip, topic = setup["ip"], setup["topic"]
         driver = Driver(
             "seyond",
-            "seyond_node", {
-                "lidar_ip": ip, "frame_topic": topic
-                },
+            "seyond_node", setup["options"],
             key=f"driver:robin:{ip}",
             log_path=log_path
             ) if start_driver else None
@@ -298,40 +299,25 @@ class D435(RosSensor):
             history=16,
             log_path=None,
             depth_profile="640x480x15",
-            color_profile="640x480x15"
+            color_profile="640x480x15",
+            parameters=None,
+            ros_args=None,
+            _setup=None
         ):
         if stream not in ("depth", "color"):
             raise ValueError("stream must be depth or color")
-        if serial and not re.fullmatch(r"[0-9]+", serial):
-            raise ValueError(
-                "serial must contain digits only (without the ROS '_' prefix)"
-                )
-        node_name = "d435" + ("_" + serial if serial else "")
-        params = {
-            "camera_name": node_name,
-            "device_type": "d435(?!i)",
-            "enable_depth": True,
-            "enable_color": True,
-            "enable_infra1": False,
-            "enable_infra2": False,
-            "depth_module.depth_profile": d435_profile(depth_profile),
-            "rgb_camera.color_profile": d435_profile(color_profile),
-            "wait_for_device_timeout": 15.0
-            }
-        if serial:
-            params["serial_no"] = "_" + serial
+        setup = _setup or d435_setup(serial, depth_profile, color_profile, parameters, ros_args)
+        serial = setup["config"]["serial"]
+        if stream not in setup["enabled"]:
+            raise ValueError(f"D435 {stream} stream is disabled by ROS parameters")
         driver = Driver(
             "realsense2_camera",
             "realsense2_camera_node",
-            params,
+            setup["options"],
             key=f"driver:d435:{serial}",
-            log_path=log_path,
-            remappings={
-                "__ns": "/rsim", "__node": node_name
-                }
+            log_path=log_path
             ) if start_driver else None
-        base = f"/rsim/{node_name}"
-        topic = f"{base}/depth/image_rect_raw" if stream == "depth" else f"{base}/color/image_raw"
+        topic = setup["topics"][stream]
         super().__init__(
             topic,
             "image",

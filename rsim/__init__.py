@@ -6,7 +6,8 @@ from .host import SharedSensor
 from .process import ProcessSensor
 from .shared import allocate
 from .transport import TransportConfig
+from .remote import Chassis, Ros1Bridge, SSHConfig
 
 __all__ = ["Frame", "HistoryMiss", "Metronome", "Runtime", "Sensor", "SensorError",
            "Bundle", "Map", "Camera", "D435", "RobinW", "SharedSensor", "ProcessSensor", "allocate",
-           "Reference", "Image", "PointCloud", "TransportConfig"]
+           "Reference", "Image", "PointCloud", "TransportConfig", "Chassis", "Ros1Bridge", "SSHConfig"]

@@ -9,6 +9,7 @@ from collections import deque
 from contextvars import ContextVar
 from pathlib import Path
 import os
+import math
 import shutil
 import uuid
 import weakref
@@ -130,6 +131,8 @@ class SharedStore:
         if isinstance(data, (tuple, list)):
             return {"type": "tuple" if isinstance(data, tuple) else "list",
                     "items": [self._encode(v, directory) for v in data]}
+        if isinstance(data, float) and not math.isfinite(data):
+            return {"type": "nonfinite", "value": str(data)}
         if data is None or isinstance(data, (str, bool, int, float)):
             return {"type": "scalar", "value": data}
         raise TypeError(f"unsupported shared data type: {type(data)}")
@@ -157,4 +160,6 @@ def decode(data, allowed_directory):
         return tuple(values) if kind == "tuple" else values
     if kind == "scalar":
         return data["value"]
+    if kind == "nonfinite":
+        return float(data["value"])
     raise ValueError(f"unknown descriptor type: {kind}")

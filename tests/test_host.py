@@ -78,3 +78,24 @@ def test_connect_only_checks_configuration_and_domain():
                 await attached.get(timeout=10)
                 assert attached.worker_pid == owner.worker_pid
     asyncio.run(run())
+
+
+def test_provider_only_configuration_conflicts_leave_clients_working():
+    async def run():
+        key = "provider:" + uuid.uuid4().hex
+        factory = lambda: CounterArray(hz=10)
+        owner = SharedSensor(factory, key=key, provider_version="settings-a")
+        async with Runtime(owner):
+            await owner.get(timeout=15)
+            client = SharedSensor(key=key)
+            equivalent = SharedSensor(factory, key=key, provider_version="settings-a")
+            async with Runtime(client, equivalent):
+                frame = await client.get(timeout=5)
+                await equivalent.get(timeout=5)
+                assert owner.worker_pid == client.worker_pid == equivalent.worker_pid
+                conflict = SharedSensor(factory, key=key, provider_version="settings-b")
+                with pytest.raises(ValueError, match="provider configuration"):
+                    async with Runtime(conflict):
+                        pass
+                assert (await client.get(after=frame.sequence, timeout=5)).sequence > frame.sequence
+    asyncio.run(run())

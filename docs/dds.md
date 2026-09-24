@@ -53,6 +53,8 @@ except asyncio.CancelledError:
 
 设备标识、profile 和 history 应在两端保持一致。D435 的两路默认均为 `640x480x15`，history=8；CLI 可通过 `--serial`、`--depth-profile`、`--color-profile`、`--history` 和 `--log-path` 配置。相同物理相机不要混用空序列号和显式序列号。冲突配置被拒绝，不会悄悄复用不同设备设置。
 
+驱动专属配置通过 `parameters={...}` 或 `ros_args=[...]` 传入；CLI 在 `--ros-args` 后接受原生 `-p`、`--params-file`、`-r` 等选项，见 [驱动参数说明](drivers.md)。这些参数仅归 provider 所有，无 ROS 客户端无需复制它们。若覆盖设备标识或 profile，客户端需使用覆盖后的有效值。`SharedSensor` 的 `provider_version` 支持这种分离：provider 之间比较驱动配置，连接型客户端仍只检查公共 version/history。
+
 也可以显式配置后端与 domain：
 
 ```python
