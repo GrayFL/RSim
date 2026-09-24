@@ -13,15 +13,15 @@ from dataclasses import asdict
 
 import cloudpickle
 
-from .core import Sensor, SensorError
+from .core import PrimaryComponent, ComponentError
 from .shared import decode
 from .transport import DescriptorTransport, transport_config
 
 
-class ProcessSensor(Sensor):
-    def __init__(self, factory, *, history=16, hz=200, transport=None):
+class ProcessSensor(PrimaryComponent):
+    def __init__(self, factory, *, history=16, hz=200, transport=None, output_name="output"):
         self.transport = transport_config(transport)
-        super().__init__(DescriptorTransport(self.transport), history=history)
+        super().__init__(DescriptorTransport(self.transport), history=history, output_name=output_name)
         self.factory, self.hz = factory, hz
         self.process = None
         self.directory = None
@@ -31,6 +31,12 @@ class ProcessSensor(Sensor):
         self._remote_sequence = 0
         self.worker_pid = None
         self._log = None
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state.update(process=None, directory=None, _lease=None, subscription=None,
+                     worker_pid=None, _log=None)
+        return state
 
     async def open(self):
         self.pending.clear()
@@ -60,9 +66,9 @@ class ProcessSensor(Sensor):
             state = json.loads(status.read_text())
             self.worker_pid = state.get("pid")
             if "error" in state:
-                raise SensorError(state["error"])
+                raise ComponentError(state["error"])
         if self.process is not None and self.process.returncode is not None:
-            raise SensorError(f"sensor supervisor exited: {self.process.returncode}")
+            raise ComponentError(f"sensor supervisor exited: {self.process.returncode}")
         if not self.pending:
             return
         descriptor = json.loads(self.pending.popleft())

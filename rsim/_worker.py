@@ -9,26 +9,30 @@ import traceback
 
 import cloudpickle
 
-from .core import Runtime, Sensor
+from .core import Runtime, Component
+from .signal import as_signal
 from .transport import DescriptorTransport, TransportConfig
 from .shared import SharedStore, current_store
 
 
-class Export(Sensor):
+class Export(Component):
     def __init__(self, source, directory, config):
-        super().__init__(source, DescriptorTransport(TransportConfig(**config["transport"])), history=1)
+        self.source = as_signal(source)
+        super().__init__(DescriptorTransport(TransportConfig(**config["transport"])), inputs=(self.source,))
         self.store = SharedStore(directory / "frames", history=config["history"])
+        self._prepared_source = self.source._resolved()
+        self._prepared_source._prepare = self.store.prepare
         self.topic = config["topic"]
         self.previous = 0
         self.latest = None
 
     async def open(self):
-        self.publisher = self.children[1].publisher(self.topic)
+        self.publisher = self.children[0].publisher(self.topic)
         self.task("export", self.export, hz=200)
         self.task("announce", self.announce, hz=20)
 
     async def export(self):
-        frame = await self.children[0].get(after=self.previous)
+        frame = await self.source.get(after=self.previous)
         self.latest = self.store.put(frame)
         self.previous = frame.sequence
         await self.announce()
@@ -40,6 +44,7 @@ class Export(Sensor):
     async def close(self):
         if hasattr(self, "publisher"):
             self.publisher.close()
+        self._prepared_source._prepare = None
         self.store.close()
 
 
@@ -55,8 +60,7 @@ async def run(directory):
     sys.path[:] = config["sys_path"]
     factory = cloudpickle.loads((directory / "factory.pkl").read_bytes())
     source = factory()
-    if not isinstance(source, Sensor):
-        raise TypeError("ProcessSensor factory must return a Sensor")
+    as_signal(source)
     exported = Export(source, directory, config)
     current_store.set(exported.store)
     async with Runtime(exported):

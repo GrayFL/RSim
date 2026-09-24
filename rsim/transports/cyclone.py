@@ -18,13 +18,13 @@ class DescriptorString(IdlStruct, typename="std_msgs::msg::dds_::String_"):
     data: str
 
 
-def descriptor_qos():
+def descriptor_qos(*, durable=True, depth=16):
     return Qos(
         Policy.Reliability.Reliable(
             max_blocking_time=duration(milliseconds=50)
             ),
-        Policy.Durability.TransientLocal,
-        Policy.History.KeepLast(16),
+        Policy.Durability.TransientLocal if durable else Policy.Durability.Volatile,
+        Policy.History.KeepLast(depth),
         Policy.DataRepresentation(use_cdrv0_representation=True)
         )
 
@@ -57,11 +57,11 @@ class CycloneTransport:
     def open(self):
         self.participant = DomainParticipant(self.domain_id)
 
-    def _endpoint(self, name, callback=None):
+    def _endpoint(self, name, callback=None, **options):
         topic = Topic(self.participant, "rt" + name, DescriptorString)
         try:
             entity = (DataReader if callback is not None else DataWriter
-                     )(self.participant, topic, qos=descriptor_qos())
+                     )(self.participant, topic, qos=descriptor_qos(**options))
         except BaseException:
             topic.__del__()
             raise
@@ -69,11 +69,11 @@ class CycloneTransport:
         self.endpoints.append(endpoint)
         return endpoint
 
-    def subscribe(self, topic, callback):
-        return self._endpoint(topic, callback)
+    def subscribe(self, topic, callback, **options):
+        return self._endpoint(topic, callback, **options)
 
-    def publisher(self, topic):
-        return self._endpoint(topic)
+    def publisher(self, topic, **options):
+        return self._endpoint(topic, **options)
 
     def poll(self):
         for endpoint in tuple(self.endpoints):

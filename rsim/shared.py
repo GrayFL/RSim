@@ -13,11 +13,19 @@ import math
 import shutil
 import uuid
 import weakref
+from dataclasses import fields, replace
 
 import numpy as np
 
 
 current_store = ContextVar("rsim_shared_store", default=None)
+
+
+def _records():
+    # Closed schema: a descriptor cannot import or instantiate arbitrary code.
+    from .model import Frame
+    from .commands import CommandEnvelope, VelocityCommand
+    return {cls.__name__: cls for cls in (Frame, CommandEnvelope, VelocityCommand)}
 
 
 def allocate(shape, dtype=np.float64):
@@ -35,11 +43,13 @@ def _unlink(path):
 
 
 class SharedStore:
-    def __init__(self, directory, *, history=16):
+    def __init__(self, directory, *, history=16, reuse=False):
         self.directory = Path(directory)
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.history = history
         self._committed = deque()
+        self._reuse = reuse
+        self._prepared = {}
 
     def prepare(self, data, memo=None):
         """Make retained worker history refer to shared arrays from publication.
@@ -55,15 +65,25 @@ class SharedStore:
             if isinstance(data, np.memmap):
                 data.flags.writeable = False
                 return data
+            cached = self._prepared.get(id(data)) if self._reuse else None
+            if cached is not None and cached[0]() is data:
+                return cached[1]
             result = self.allocate(data.shape, data.dtype)
             np.copyto(result, data)
             result.flags.writeable = False
             memo[id(data)] = result
+            if self._reuse:
+                identity = id(data)
+                self._prepared[identity] = (weakref.ref(data, lambda _: self._prepared.pop(identity, None)),
+                                            result)
             return result
         if isinstance(data, PointCloud):
             return PointCloud(self.prepare(data.points, memo), data.frame_id)
         if isinstance(data, Image):
             return Image(self.prepare(data.pixels, memo), data.encoding, data.frame_id)
+        if type(data) in _records().values():
+            return replace(data, **{field.name: self.prepare(getattr(data, field.name), memo)
+                                    for field in fields(data)})
         if isinstance(data, dict):
             return {k: self.prepare(v, memo) for k, v in data.items()}
         if isinstance(data, (tuple, list)):
@@ -124,6 +144,10 @@ class SharedStore:
         if isinstance(data, Image):
             return {"type": "image", "pixels": self._encode(data.pixels, directory),
                     "encoding": data.encoding, "frame_id": data.frame_id}
+        if type(data) in _records().values():
+            return {"type": "record", "name": type(data).__name__,
+                    "fields": {field.name: self._encode(getattr(data, field.name), directory)
+                               for field in fields(data)}}
         if isinstance(data, dict):
             if not all(isinstance(k, str) for k in data):
                 raise TypeError("shared dictionary keys must be strings")
@@ -138,6 +162,7 @@ class SharedStore:
         raise TypeError(f"unsupported shared data type: {type(data)}")
 
     def close(self):
+        self._prepared.clear()
         shutil.rmtree(self.directory, ignore_errors=True)
 
 
@@ -155,6 +180,9 @@ def decode(data, allowed_directory):
         return Image(decode(data["pixels"], allowed_directory), data["encoding"], data["frame_id"])
     if kind == "dict":
         return {k: decode(v, allowed_directory) for k, v in data["items"].items()}
+    if kind == "record":
+        record = _records()[data["name"]]
+        return record(**{key: decode(value, allowed_directory) for key, value in data["fields"].items()})
     if kind in ("tuple", "list"):
         values = [decode(v, allowed_directory) for v in data["items"]]
         return tuple(values) if kind == "tuple" else values

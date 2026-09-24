@@ -10,6 +10,8 @@ import array
 import base64
 from collections import deque
 import ctypes
+import fcntl
+import hashlib
 import json
 import math
 import os
@@ -19,6 +21,12 @@ import struct
 import sys
 import threading
 import time
+import tempfile
+
+try:
+    integer_types = (int, long)
+except NameError:
+    integer_types = (int,)
 
 MAX_MESSAGE = 8 * 1024 * 1024
 ARRAY_TYPES = {"bool": "B", "int8": "b", "uint8": "B", "byte": "b", "char": "B",
@@ -38,6 +46,19 @@ def monotonic():
     if _clock(1, ctypes.byref(value)) != 0:
         raise RuntimeError("CLOCK_MONOTONIC unavailable")
     return value.sec + value.nsec * 1e-9
+
+
+def monotonic_ns():
+    value = Timespec()
+    if _clock(1, ctypes.byref(value)) != 0:
+        raise RuntimeError("CLOCK_MONOTONIC unavailable")
+    return value.sec * 1000000000 + value.nsec
+
+
+class CommandRejected(ValueError):
+    def __init__(self, message, reason="invalid"):
+        ValueError.__init__(self, message)
+        self.reason = reason
 
 
 def encode(value, field_type=""):
@@ -77,6 +98,46 @@ class Agent(object):
         self.stopped = threading.Event()
         self.last_input = monotonic()
         self.command_lock = threading.Lock()
+        self.command_states, self.command_leases = {}, {}
+
+    def validate_command(self, topic, command):
+        """Validate at the hardware provider, after any connection/queue delay."""
+        now = monotonic_ns()
+        if not isinstance(command, dict):
+            raise CommandRejected("Twist requires a command envelope")
+        identity = (command.get("controller_id"), command.get("controller_epoch"))
+        sequence, deadline = command.get("sequence"), command.get("deadline_ns")
+        if (not all(identity) or not isinstance(sequence, integer_types) or sequence <= 0
+                or not isinstance(deadline, integer_types)):
+            raise CommandRejected("invalid command envelope")
+        if deadline <= now:
+            raise CommandRejected("command expired", reason="expired")
+        if deadline > now + 500000000:
+            raise CommandRejected("command exceeds provider TTL")
+        state = self.command_states.setdefault(topic, {"owner": None, "deadline": 0,
+                                                      "sequences": {}, "retired": set()})
+        if identity in state["retired"] or sequence <= state["sequences"].get(identity, 0):
+            raise CommandRejected("replayed command or retired controller epoch")
+        if state["owner"] is not None and state["owner"] != identity:
+            if now < state["deadline"]:
+                raise CommandRejected("exclusive command owner; use CommandMux")
+        # Separate SSH sessions must not race writes to the same hardware topic.
+        # This cooperative lock covers all RSim providers under this Unix user.
+        if topic not in self.command_leases:
+            key = hashlib.sha256(topic.encode("utf8")).hexdigest()
+            path = os.path.join(tempfile.gettempdir(), "rsim-command-%s-%s.lock" % (os.getuid(), key))
+            lease = open(path, "a+")
+            try:
+                fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except IOError:
+                lease.close()
+                raise CommandRejected("hardware command topic owned by another RSim session")
+            self.command_leases[topic] = lease
+        if state["owner"] is not None and state["owner"] != identity:
+            state["retired"].add(state["owner"])
+        state["owner"], state["deadline"] = identity, deadline
+        state["sequences"][identity] = sequence
+        return deadline * 1e-9
 
     def reply(self, packet):
         with self.lock:
@@ -150,40 +211,84 @@ class Agent(object):
                       for axis in ("x", "y", "z")]
             if any(math.isnan(v) or math.isinf(v) for v in values):
                 raise ValueError("velocity must be finite")
-        if topic not in self.publishers:
-            self.publishers[topic] = (kind, self.rospy.Publisher(topic, cls, queue_size=1, latch=False))
-        established, publisher = self.publishers[topic]
-        if established != kind:
-            raise ValueError("conflicting publisher type")
+        self.advertise(request)
+        _, publisher = self.publishers[topic]
         deadline = monotonic() + 2.0
         while publisher.get_num_connections() == 0:
             if monotonic() >= deadline or self.stopped.is_set():
                 raise RuntimeError("no ROS1 subscriber connected to " + topic)
             time.sleep(.01)
         with self.command_lock:
-            publisher.publish(message)
+            command_deadline = None
             if kind == "geometry_msgs/Twist":
-                # Never latch or replay commands; stop if refresh/session ends.
-                self.commands[topic] = (monotonic() + .5, cls)
+                command_deadline = self.validate_command(topic, request.get("command"))
+                self.commands[topic] = (command_deadline, cls)
+            publisher.publish(message)
         return {"published": True, "connections": publisher.get_num_connections()}
 
+    def advertise(self, request):
+        from roslib.message import get_message_class
+        topic, kind = request["topic"], request["type"]
+        cls = get_message_class(kind)
+        if cls is None:
+            raise ValueError("unknown ROS1 message type " + kind)
+        if topic not in self.publishers:
+            self.publishers[topic] = (kind, self.rospy.Publisher(topic, cls, queue_size=1, latch=False))
+        if self.publishers[topic][0] != kind:
+            raise ValueError("conflicting publisher type")
+        return {"advertised": True}
+
     def stop_expired(self, all_commands=False):
+        errors = []
         with self.command_lock:
             for topic, (deadline, cls) in list(self.commands.items()):
                 if all_commands or monotonic() >= deadline:
-                    self.publishers[topic][1].publish(cls())
-                    del self.commands[topic]
+                    try:
+                        self.publishers[topic][1].publish(cls())
+                    except Exception as error:
+                        errors.append(str(error))
+                    finally:
+                        del self.commands[topic]
+                        lease = self.command_leases.pop(topic, None)
+                        if lease is not None:
+                            lease.close()
+        if errors:
+            raise RuntimeError("zero command failed: " + "; ".join(errors))
+
+    def stop(self, request):
+        topic = request["topic"]
+        identity = (request.get("controller_id"), request.get("controller_epoch"))
+        with self.command_lock:
+            state = self.command_states.get(topic)
+            if state is None or state["owner"] != identity:
+                raise CommandRejected("stop request does not own this command session")
+            command = self.commands.pop(topic, None)
+            try:
+                if command is not None:
+                    self.publishers[topic][1].publish(command[1]())
+            finally:
+                lease = self.command_leases.pop(topic, None)
+                if lease is not None:
+                    lease.close()
+                state["deadline"] = 0
+        return {"stopped": True}
 
     def watchdog(self):
-        while not self.stopped.wait(.05):
-            self.stop_expired()
-            if monotonic() - self.last_input > 10:
-                self.stopped.set()
+        try:
+            while not self.stopped.wait(.05):
+                self.stop_expired()
+                if monotonic() - self.last_input > 10:
+                    self.stopped.set()
+        except Exception as error:
+            print("command watchdog failed: " + str(error), file=sys.stderr)
+            self.stopped.set()
 
     def dispatch(self, request):
         op = request["op"]
         if op == "ping":
-            return {"alive": True}
+            return {"alive": True, "monotonic_ns": monotonic_ns()}
+        if op == "stop":
+            return self.stop(request)
         if op == "topics":
             import rosgraph
             master = rosgraph.Master(self.rospy.get_name())
@@ -200,6 +305,8 @@ class Agent(object):
             return {}
         if op == "publish":
             return self.publish(request)
+        if op == "advertise":
+            return self.advertise(request)
         raise ValueError("unknown operation " + op)
 
     def run(self):
@@ -207,7 +314,7 @@ class Agent(object):
             thread = threading.Thread(target=function)
             thread.daemon = True
             thread.start()
-        self.reply({"op": "ready", "version": 1, "pid": os.getpid(),
+        self.reply({"op": "ready", "version": 2, "pid": os.getpid(), "monotonic_ns": monotonic_ns(),
                     "python": sys.version.split()[0], "node": self.rospy.get_name()})
         buffer = b""
         try:
@@ -228,16 +335,23 @@ class Agent(object):
                         result = self.dispatch(request)
                         response = {"op": "reply", "id": request["id"], "result": result}
                     except Exception as error:
-                        response = {"op": "reply", "id": request.get("id"), "error": str(error)}
+                        response = {"op": "reply", "id": request.get("id"), "error": str(error),
+                                    "error_type": "command_rejected" if isinstance(error, CommandRejected) else "request_error",
+                                    "reason": getattr(error, "reason", "invalid")}
                     self.reply(response)
         finally:
             self.stopped.set()
-            self.stop_expired(all_commands=True)
-            for subscription in self.subscriptions.values():
-                subscription.unregister()
-            for _, publisher in self.publishers.values():
-                publisher.unregister()
-            self.rospy.signal_shutdown("SSH session closed")
+            try:
+                self.stop_expired(all_commands=True)
+            finally:
+                for lease in self.command_leases.values():
+                    lease.close()
+                self.command_leases.clear()
+                for subscription in self.subscriptions.values():
+                    subscription.unregister()
+                for _, publisher in self.publishers.values():
+                    publisher.unregister()
+                self.rospy.signal_shutdown("SSH session closed")
 
 
 def main():

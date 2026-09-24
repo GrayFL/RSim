@@ -3,11 +3,11 @@ import time
 
 import numpy as np
 
-from .core import Sensor
+from .core import PrimaryComponent
 from .shared import allocate
 
 
-class CounterArray(Sensor):
+class CounterArray(PrimaryComponent):
     def __init__(self, *, size=1024, hz=30, history=16):
         super().__init__(history=history)
         self.size, self.hz, self.count = size, hz, 0

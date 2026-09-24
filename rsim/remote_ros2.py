@@ -3,8 +3,10 @@ from collections import deque
 
 import numpy as np
 
-from .core import Sensor
+from .core import Component
+from .commands import Connect, VelocityCommand
 from .ros import RosContext
+import time
 
 
 def fill_ros2(message, values):
@@ -21,16 +23,23 @@ def fill_ros2(message, values):
     return message
 
 
-class ChassisROS2(Sensor):
+class ChassisROS2(Component):
     """Mirror sensor_msgs/Imu, nav_msgs/Odometry, LaserScan and reverse Twist.
 
     Command subscriptions are volatile, depth one. No command is latched or
     replayed on reconnect. Use a distinct prefix to avoid feedback topic loops.
     """
-    def __init__(self, chassis, *, prefix="/chassis", hz=200):
+    def __init__(self, chassis, *, prefix="/chassis", hz=200, forward_commands=True):
         if not prefix.startswith("/") or prefix == "/":
             raise ValueError("prefix must be a non-root absolute ROS namespace")
-        super().__init__(chassis, RosContext(), history=1)
+        super().__init__(chassis, RosContext())
+        self.velocity_command = self.signal("velocity_command", history=1, clock="host:monotonic")
+        if forward_commands:
+            self.dependencies += (Connect(self.velocity_command, chassis.velocity),)
+        for name in ("imu", "odom", "scan", "state", "velocity_feedback"):
+            output = self.signal(name)
+            output._target = getattr(chassis, name)
+            setattr(self, name, output)
         self.prefix, self.hz = prefix.rstrip("/"), hz
         self.publishers, self.previous = {}, {}
         self.pending = deque(maxlen=1)
@@ -56,13 +65,6 @@ class ChassisROS2(Sensor):
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.VOLATILE))
         self.task("forward-command", self._command, hz=100)
-        self.task("relay-frame", self._frame, hz=self.hz)
-
-    async def _frame(self):
-        frame = await self.children[0].get(after=self.frame_sequence)
-        await self.publish(frame.data, stamp_ns=frame.stamp_ns, clock=frame.clock,
-                           received_ns=frame.received_ns)
-        self.frame_sequence = frame.sequence
 
     def _mirror_callback(self, name):
         async def mirror():
@@ -76,10 +78,10 @@ class ChassisROS2(Sensor):
     async def _command(self):
         if self.pending:
             message = self.pending.popleft()
-            data = {name: {axis: getattr(getattr(message, name), axis) for axis in ("x", "y", "z")}
-                    for name in ("linear", "angular")}
-            chassis = self.children[0]
-            await chassis.bridge.publish_message(chassis.cmd_vel_topic, "geometry_msgs/Twist", data)
+            if any((message.linear.y, message.linear.z, message.angular.x, message.angular.y)):
+                raise ValueError("planar chassis accepts only linear.x and angular.z")
+            await self.velocity_command.publish(VelocityCommand(message.linear.x, message.angular.z),
+                                                 stamp_ns=time.monotonic_ns(), clock="host:monotonic")
 
     async def close(self):
         node = self.children[1].node

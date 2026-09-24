@@ -1,13 +1,15 @@
-"""Small building blocks. Factories may contain nested ProcessSensor instances."""
+"""Signal-to-Signal building blocks, with explicit single-output convenience."""
 import inspect
 import time
 
-from .core import Frame, Sensor
+from .core import Frame, PrimaryComponent
+from .signal import as_signal
 
 
-class Map(Sensor):
+class Map(PrimaryComponent):
     def __init__(self, source, function, *, hz=30, history=16):
-        super().__init__(source, history=history)
+        self.source = as_signal(source)
+        super().__init__(inputs=(self.source,), history=history)
         self.function, self.hz = function, hz
         self.previous = 0
 
@@ -16,7 +18,7 @@ class Map(Sensor):
         self.task("transform", self.transform, hz=self.hz)
 
     async def transform(self):
-        frame = await self.children[0].get(after=self.previous)
+        frame = await self.source.get(after=self.previous)
         result = self.function(frame.data)
         if inspect.isawaitable(result):
             result = await result
@@ -29,12 +31,13 @@ class Map(Sensor):
         self.previous = frame.sequence
 
 
-class Bundle(Sensor):
+class Bundle(PrimaryComponent):
     """Latest samples, preserving each clock. This is not calibrated sensor fusion."""
     def __init__(self, *, hz=10, history=16, **sources):
         if not sources:
             raise ValueError("Bundle requires at least one source")
-        super().__init__(*sources.values(), history=history)
+        self.sources = {name: as_signal(source) for name, source in sources.items()}
+        super().__init__(inputs=self.sources.values(), history=history)
         self.names, self.hz = tuple(sources), hz
 
     async def open(self):
@@ -42,7 +45,7 @@ class Bundle(Sensor):
 
     async def combine(self):
         values = {}
-        for name, child in zip(self.names, self.children):
+        for name, child in self.sources.items():
             frame = await child.get()
             values[name] = {"data": frame.data, "stamp_ns": frame.stamp_ns,
                             "clock": frame.clock, "received_ns": frame.received_ns}

@@ -1,14 +1,17 @@
 """Public data models. No ROS or DDS imports are needed to use these types."""
 from dataclasses import dataclass, field
 import time
-from typing import Any
+from typing import Generic, TypeVar
 
 import numpy as np
 
 
+T = TypeVar("T")
+
+
 @dataclass(frozen=True)
-class Frame:
-    data: Any
+class Frame(Generic[T]):
+    data: T
     stamp_ns: int
     clock: str
     received_ns: int = field(default_factory=time.time_ns)

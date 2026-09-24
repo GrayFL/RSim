@@ -1,4 +1,4 @@
-"""A nested process graph, with a CPU-heavy point cloud transform."""
+"""Read one shared lidar source; place point-cloud computation in a worker."""
 import asyncio
 import json
 import os
@@ -7,10 +7,9 @@ import time
 
 import numpy as np
 
-from rsim import Runtime, allocate
+from rsim import Runtime, ProcessPlacement, allocate
 from rsim.compose import Map
-from rsim.process import ProcessSensor
-from rsim.ros import RobinW
+from rsim.drivers import RobinW
 
 
 def summarize(cloud):
@@ -35,12 +34,9 @@ def summarize(cloud):
         }
 
 
-def factory():
-    return Map(ProcessSensor(lambda: RobinW(history=8)), summarize, hz=10)
-
-
-async def main():
-    sensor = ProcessSensor(factory, history=8)
+async def main(ip):
+    lidar = RobinW(ip=ip, history=8)
+    sensor = Map(lidar.points, summarize, hz=10, history=8)
     delays = []
 
     async def heartbeat():
@@ -51,7 +47,7 @@ async def main():
 
     beat = asyncio.create_task(heartbeat())
     try:
-        async with Runtime(sensor):
+        async with Runtime(sensor.output, placement={sensor: ProcessPlacement("points")}) as runtime:
             frame = await sensor.get(timeout=30)
             following = await sensor.get(after=frame.sequence, timeout=10)
             assert isinstance(following.data["voxels"], np.memmap)
@@ -74,9 +70,10 @@ async def main():
                 "heartbeat_max_ms":
                     max(delays) * 1000
                 }
-        result["supervisor_exit"] = sensor.process.returncode
-        result["store_removed"] = not sensor.directory.exists()
-        Path("assets/process-robin.json").write_text(
+        result["closed"] = not runtime._active
+        assets = Path(__file__).resolve().parents[1] / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        (assets / "process-robin.json").write_text(
             json.dumps(result, indent=2)
             )
         print(json.dumps(result, indent=2))
@@ -86,4 +83,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ip", required=True)
+    asyncio.run(main(parser.parse_args().ip))

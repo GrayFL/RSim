@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rsim"
-version = "0.2.0"
-description = "Async composable sensors over DDS with optional ROS 2 drivers"
+version = "0.3.0"
+description = "Async robot components, time-indexed signals and command ports with ROS adapters"
 requires-python = ">=3.12"
 dependencies = ["numpy>=1.26", "cloudpickle>=3"]
 

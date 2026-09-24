@@ -196,6 +196,11 @@ def test_service_backpressure_waiters_all_exit_on_shutdown():
                 await asyncio.Future()
             self.service("block", block, hz=100, capacity=1)
 
+        async def close(self):
+            # Pending queue.put callers can resume while network/device cleanup
+            # yields; they must still fail rather than enter an orphaned queue.
+            await asyncio.sleep(.05)
+
     async def run():
         sensor = Blocked()
         async with Runtime(sensor):

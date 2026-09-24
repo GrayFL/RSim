@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import json
 
 
 def main():
@@ -24,9 +25,11 @@ def main():
     signal.signal(signal.SIGINT, stop)
     worker = None
     try:
+        config = json.loads((directory / "config.json").read_text())
+        module = config.get("worker_module", "rsim._worker")
         worker = subprocess.Popen([
             sys.executable, "-m", "rsim._exec", str(os.getpid()),
-            sys.executable, "-m", "rsim._worker", str(directory),
+            sys.executable, "-m", module, str(directory),
         ], start_new_session=True)
         with selectors.DefaultSelector() as selector:
             selector.register(lease, selectors.EVENT_READ)
@@ -35,7 +38,6 @@ def main():
                     shutil.rmtree(directory / "frames", ignore_errors=True)
                     status = directory / "status.json"
                     # A hard crash cannot write its own traceback.
-                    import json
                     state = json.loads(status.read_text()) if status.exists() else {}
                     if "error" not in state:
                         temporary = directory / "supervisor-status.tmp"

@@ -2,24 +2,29 @@
 import json
 
 from ._device_config import d435_config, d435_version
-from .core import Sensor, SensorError
+from .core import PrimaryComponent, ComponentError
+from .signal import as_signal
 from .host import SharedSensor
 
 
 def RobinW(ip="192.168.199.97", *, history=8, transport=None):
-    return SharedSensor(
+    source = SharedSensor(
         key=f"robin:{ip}",
         version="robin-v1",
         history=history,
-        transport=transport
+        transport=transport, output_name="points"
         )
+    source.points = source.output
+    return source
 
 
-class _ImageStream(Sensor):
+class _ImageStream(PrimaryComponent):
     """Select fresh source frames; repeated bundle snapshots are not new images."""
 
     def __init__(self, source, stream, *, hz, history):
-        super().__init__(source, history=history)
+        self.source = as_signal(source)
+        super().__init__(inputs=(self.source,), history=history, output_name="image")
+        self.image = self.output
         self.stream, self.hz = stream, hz
         self.previous = 0
         self.identity = None
@@ -29,10 +34,10 @@ class _ImageStream(Sensor):
         self.task("select-image", self.select, hz=self.hz)
 
     async def select(self):
-        frame = await self.children[0].get(after=self.previous)
+        frame = await self.source.get(after=self.previous)
         self.previous = frame.sequence
         if self.stream not in frame.data:
-            raise SensorError(
+            raise ComponentError(
                 f"D435 provider has no enabled {self.stream} stream"
                 )
         sample = frame.data[self.stream]
@@ -107,9 +112,11 @@ def Camera(
     config = {
         "device": device, "width": width, "height": height, "fps": fps
         }
-    return SharedSensor(
+    source = SharedSensor(
         key=f"uvc:{device}",
         version=json.dumps(config, sort_keys=True),
         history=history,
-        transport=transport
+        transport=transport, output_name="image"
         )
+    source.image = source.output
+    return source

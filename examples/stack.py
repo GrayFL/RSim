@@ -1,37 +1,22 @@
-"""Camera + shared lidar + nested point processing, all accessed as sensors."""
+"""Camera / lidar Signals and a process-placed computation feed one snapshot."""
 import asyncio
 import json
 import os
 from pathlib import Path
 
-from rsim import Bundle, Map, ProcessSensor, RobinW, Runtime
+from rsim import Bundle, Map, ProcessPlacement, Runtime
 from rsim.drivers import Camera, RobinW as RobinWDriver
 from examples.process_robin import summarize
 
 
-def processing():
-    source = RobinW()
-
-    def compute(cloud):
-        data = summarize(cloud)
-        data["source_pid"] = source.worker_pid
-        return data
-
-    return Map(source, compute, hz=10)
-
-
-async def main():
-    lidar = RobinWDriver()
-    stack = Bundle(
-        camera=Camera(),
-        lidar=lidar,
-        voxels=ProcessSensor(processing),
-        hz=10
-        )
-    async with Runtime(stack):
+async def main(ip, camera_device):
+    lidar = RobinWDriver(ip=ip)
+    camera = Camera(device=camera_device)
+    voxels = Map(lidar.points, summarize, hz=10)
+    stack = Bundle(camera=camera.image, lidar=lidar.points, voxels=voxels.output, hz=10)
+    async with Runtime(stack.output, placement={voxels: ProcessPlacement("points")}):
         frame = await stack.get(timeout=30)
         samples = frame.data
-        assert lidar.worker_pid == samples["voxels"]["data"]["source_pid"]
         drivers = []
         for path in Path("/proc").glob("[0-9]*/cmdline"):
             try:
@@ -54,9 +39,16 @@ async def main():
                 for name, item in samples.items()
                 }
             }
-    Path("assets/stack.json").write_text(json.dumps(result, indent=2))
+    assets = Path(__file__).resolve().parents[1] / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    (assets / "stack.json").write_text(json.dumps(result, indent=2))
     print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ip", required=True)
+    parser.add_argument("--camera-device", default="/dev/video0")
+    args = parser.parse_args()
+    asyncio.run(main(args.ip, args.camera_device))

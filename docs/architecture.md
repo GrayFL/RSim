@@ -1,73 +1,125 @@
-# 设计与取舍
+# Component / Signal 架构
 
-## 运行结构
+## 两张独立的图
+
+`Component` 是生命周期和计算单位，`Signal[T]` 是由组件产生的时间序列。Signal 没有 open/close、WatchDog 或自己的进程。Component 可以有零个、一个或多个输出；数据存储和 `get()` 不再放进通用 Component。
 
 ```mermaid
 flowchart LR
-    CameraHW[UVC 相机] --> CameraSource[共享源进程：UVC 发布 + ROS Image 订阅]
-    LidarHW[Robin W] --> Driver[原生 Seyond ROS 驱动]
-    Driver --> LidarSource[共享源进程：ROS PointCloud2 订阅]
-    CameraSource -->|同一 domain：DDS 描述信息 + 只读 mmap| Main[无 ROS 的 Notebook asyncio：Bundle / get]
-    LidarSource -->|DDS 描述信息 + 只读 mmap| Main
-    LidarSource -->|同一份点云映射| Compute[子进程 asyncio：Map / 体素计算]
-    Compute -->|DDS 描述信息 + 只读 mmap| Main
-    Main -.socket lease.-> CameraGuard[相机源监督进程]
-    Main -.socket lease.-> LidarGuard[雷达源监督进程]
-    Compute -.socket lease.-> LidarGuard
-    Main -.pipe lease.-> ComputeGuard[计算监督进程]
+    C[Camera.image] --> J[Synchronizer]
+    L[Lidar.points] --> J
+    O[Chassis.odom] --> J
+    J --> A[Analysis Component]
+    A --> P[pose Signal]
+    A --> M[map Signal]
+    P --> N[Navigation]
+    P --> U[UI / Recorder]
+    N --> V[velocity_command Signal]
+    V --> X[CommandMux]
+    X --> K[Connect]
+    K --> S[Chassis.velocity CommandSink]
 ```
 
-`Sensor` 表示数据与生命周期，`Runtime` 负责拥有关系。`Bundle`、`Map` 是普通 Sensor，没有特殊运行后端。`ProcessSensor(factory)` 将工厂创建的整棵图放到子进程；内部同样使用 Runtime，可以再次包含 ProcessSensor 或 SharedSensor。
+生命周期由 `Component.dependencies` 描述，必须是 DAG；同一个对象或相同 key/configuration 的源仅打开一次。`Component.inputs` 是数据边，Runtime 从每条 Signal 的 producer 反向发现组件；数据图可以有反馈环。反馈仍需要业务提供初值或延迟，框架不制造首帧。启动顺序始终满足 ownership 依赖，数据输入只提供启动顺序偏好；所有组件的端口在 open 阶段前进入运行状态，允许 seed publication。
 
-应用通过 `rsim` 的设备工厂连接；驱动通过 `rsim.drivers` 启动。`Frame`、`Image` 和 `PointCloud` 位于不依赖 ROS/DDS 的 `rsim.model`。应用与驱动可以使用不同 Python 版本；工厂只在创建源的环境中执行，不发送给订阅者。运行方式和迁移说明见 [DDS 文档](dds.md)。
+`Runtime(component.output)` 与 `Runtime(component)` 都管理所需的运行图。关闭时逆序停止任务、执行 sink 安全状态、关闭资源并唤醒等待者；失败经 ownership 和数据依赖传播。Signal 别名共享实际 Frame 缓冲，同时保留公开组件的失败语义。
 
-`Reference(target)` 不拥有目标，不递归启动目标；用于同一 Runtime 内的反向/共享引用。拥有关系的环与数据反馈环分开处理：前者拒绝，后者必须由业务处理初始值、超时和时序。
+## 核心接口
 
-## asyncio 与 ROS 执行器
+| 类型 | 责任 | 接口 |
+| --- | --- | --- |
+| Component | 所有权、任务、失败、放置位置 | dependencies / inputs / open / close / task / service / wait |
+| Signal[T] | producer、历史、时间查询、广播等待 | publish / get / frames |
+| Frame[T] | 数据及其时间元信息 | data / stamp_ns / clock / received_ns / sequence |
+| PrimaryComponent | 明确的单输出便捷接口 | output / primary / get / publish |
+| CommandSink[T] | provider 所有的写端口 | set |
+| Runtime | 解析两张图并绑定部署位置 | async with / wait |
 
-ROS 驱动接入图中的节点共用 `RosContext`，以限速协程调用 `SingleThreadedExecutor.spin_once(timeout_sec=0)`。ROS 回调只做短入队；消息转换、发布帧、用户处理通过 Sensor.task 调度。队列和历史均有界。
+`Frame` 不可变，但 payload 的不可变性是发布协议：发布后不得再修改数据或保留写别名。同进程不自动复制数组，也不自动设置数组 writeable 标记。跨进程读者得到只读 OS 映射。
 
-通用进程封装使用独立的 `DescriptorTransport`。默认原生 Cyclone DDS 后端通过有界 `DataReader.take()` 轮询；可选 ROS 后端将 rclpy 的创建、发布、订阅和销毁集中封装。后端均由 Sensor 任务控速并受 WatchDog 管理。无 ROS 应用只加载原生后端，不创建 rclpy 节点。
+`Signal.get()` 读取最新帧；`after` 是当前端口的本地观察游标。跨边界会生成本地 sequence，不能用两个端口的 sequence 相等推断同一次物理采样。时间查询要求显式 clock，使用最近邻容差，历史外抛出 `HistoryMiss`。`received_ns` 是 Unix 接收/产生时间，会随派生组件是否显式继承而不同；它不证明设备时钟同步。
 
-两种调度器的 Future/等待机制不同，因此原型采用明确的轮询桥接，便于控制频率并在 Notebook 已有事件循环中运行。实现参考 [rclpy 执行器源码](https://github.com/ros2/rclpy/blob/jazzy/rclpy/rclpy/executors.py)；该链接固定到设计参考版本，使用其他版本时需核对接口兼容性。
+多输出组件（底盘、SLAM、Navigation）直接暴露命名 Signals，不提供模糊的聚合 get。只有明确 primary output 的组件提供 get 快捷调用。自定义算法可以保持内部变量，只将需观察、复用或传输的结果声明为 Signal。
 
-`get` 本身是事件驱动的协程：调用者等待 Condition，发布端通知；任务速率由生产、转换、DDS 轮询和用户服务各自的 Metronome 控制。重计算通过 ProcessSensor 隔离，不依赖 Python 线程获得 CPU 并行。
+## 组合与时钟
 
-## DDS 与共享内存
+`Map(signal, function)` 产生 `.output`；未返回新 Frame 时继承输入时间元信息。`Bundle(**signals)` 是各路 latest snapshot，保留每路时钟，自己的 Frame 用主机 Unix 时间。
 
-ROS 2 常规 Python Image/PointCloud2 发布不能直接等同于 loan。Fast DDS 的 [Data Sharing](https://fast-dds.docs.eprosima.com/en/stable/fastdds/transport/datasharing.html) 还有类型、内存与端点配置条件；[ROS loan 设计](https://github.com/ros2/design/blob/gh-pages/articles/zero_copy.md) 涉及中间件及客户端支持。本原型使用以下混合通道：
+```python
+from rsim import Synchronizer, ClockTransform
 
-- 同一 DDS domain 的 String topic 发布小型、JSON 编码的帧描述信息，可靠且 transient-local，支持发现后读取最新帧。原生和 rclpy 后端使用相同 topic、类型与 XCDR1 编码，直接互通，无需另起 domain 或转发桥。
-- 数组使用 `/dev/shm` 中的 `.npy` 文件，保留 dtype、shape 和结构化点记录；读者 `np.load(..., mmap_mode="r")`。
-- 文件路径含独立帧代号，不重复写入旧文件。读者验证路径在该源目录下，再打开只读映射。
-- 已共享的完整 memmap 跨层转发使用硬链接；`allocate` 允许计算直接写入共享输出，提交时不再复制 payload。
-- 历史淘汰 unlink 文件，不覆写任何有效映射。文件页由内核按实际映射生命周期回收。
+sync = Synchronizer(
+    image=camera.image, odom=chassis.odom,
+    reference="image", clock="robot", tolerance_ns=20_000_000,
+    transforms={"image": camera_to_robot, "odom": odom_to_robot},
+    interpolate={"odom": interpolate_odometry},
+)
+```
 
-这里的零拷贝边界是同机数据平面的数组映射共享，不包括远程传输、rclpy 消息转换、ROS 驱动内部或原生 Fast DDS loan。体素计算示例中 `np.unique` 的返回数组首次共享需要复制；距离数组则直接在 `allocate` 输出中计算。
+`ClockDomain(name)` 明确时间域；`ClockTransform(source, target, offset_ns, rate)` 做显式仿射换算，rate 可用 Fraction 避免大整数时间戳的浮点精度损失。标定参数及不确定性由应用提供，框架不从字符串名称猜测相同时间域，也不自动同步硬件时钟。
 
-`/dev/shm` 是传输实现使用的临时运行时存储，不是实验资产目录。需要保存的图像、图表、采集结果、日志和报告统一写入项目根目录的 `assets/`，约定见 [开发说明](development.md)。
+`Synchronizer` / `TimeJoin` 围绕每个参考帧的目标时间选取其他输入中当前保留的最近样本。插值函数接收 `(left.data, right.data, fraction)`，必须有双侧 bracket，两端都在容差内；不外推。输出 data 为 `name -> Frame`：原始样本保留其时钟和对象引用，插值 Frame 使用目标时钟与 sequence=0 表示派生结果。
 
-## 所有权和失败处理
+`join(timestamp_ns, clock=...)` 可直接查询；没有匹配样本时最多等 wait_timeout，然后抛 HistoryMiss。后台同步任务丢弃这次未匹配的参考帧并计入 dropped；时钟不匹配属于配置错误，会使组件失败。它是有界实时 join，不是等待所有未来样本后求全局最优配对。
 
-| 场景 | 行为 |
-|---|---|
-| 正常退出 / Notebook 异常 / Task 取消 | Runtime 逆序取消任务、唤醒等待者并调用 close |
-| Sensor 任务异常 | WatchDog 保存原因、取消同节点任务、通知 get/service；上层 WatchDog 传播错误 |
-| 普通子进程主循环卡死 | 独立监督进程仍可处理父端 pipe EOF；SIGTERM 后最多等待 5 秒，再 SIGKILL |
-| 主进程被 SIGKILL | 内核关闭 lease FD；各层监督进程递归停止 worker 并清理共享文件 |
-| 共享源第一个客户离开/被杀 | 其他 Unix socket lease 保持采集存活 |
-| 共享源最后一个客户离开 | 监督进程在选举锁下关闭监听、停止 worker、删除帧文件 |
-| 不同客户同时创建同一源 | 文件锁串行化创建/连接；共享一个 source worker 和 DDS 描述信息 topic |
-| 同一源 key 配置不同 | 拒绝连接，避免悄悄复用不同参数的设备 |
-| 只连接的客户端发现源不存在 | 报告源未启动，不在应用环境中反序列化或运行驱动工厂 |
-| 不同 DDS domain 请求同一物理设备 | 独立的物理设备锁拒绝第二次硬件启动；使用者应统一 domain |
+## 控制接口与所有权
 
-原生驱动使用 Linux `PR_SET_PDEATHSIG`，避免 Python 采集进程突然消失后留下驱动。监督进程独立于计算进程；不能用同一条被计算阻塞的 asyncio 循环来保障其自身退出。
+`VelocityCommand(linear_x, angular_z)` 为平面速度模型。控制器只发布命令 Signal；`Connect(source, sink)` 负责转发。原始值由 Connect 封装为命令，已有 CommandEnvelope 则保留其身份和 deadline，不因转发而续期。控制输出可以同时被 Recorder/UI 读取，不重复运行控制器。
 
-共享源面向同机、同 Unix 用户的可信库使用者；未接入本库的第三方驱动不会遵守其锁协议。默认不修改用户 ROS 工作空间、网络配置、设备时间同步或标定参数。
+`CommandMux` / `Arbiter` 按显式优先级选择有效输入，相同优先级按声明顺序。输入为 `CommandInput(signal, priority, timeout)`；缓存数据的有效期不因重复仲裁而更新。`override(name)` 独占选择指定来源，该来源过期时使用 fallback；`override(None)` 恢复优先级选择。
 
-## 后续可以继续演进
+Runtime 拒绝同一 sink 的两个 Connect。被 Connect 占有的 sink 拒绝旁路直接 set。不同会话的竞争还由 provider 的独占租约检查处理；DDS 到达顺序不充当仲裁规则。
 
-固定大小的 C++ loan 类型/原生 DDS Data Sharing、跨机器 fallback、跨进程自定义 service RPC、硬件时钟同步和深度相机标定是后续扩展方向。当前交付是需求测试用基础原型，公开 get/组合接口可保留，后端可以替换。
+`CommandEnvelope` 包含 value、controller_id、controller_epoch、sequence、deadline_ns。最终 provider 拒绝过期、超出最大 TTL、重复/倒序 sequence、已退役 epoch，以及当前租约内的其他 controller。epoch 变更不能抢占仍有效的控制器；过期后更换会话，旧 epoch 被永久退役到该 provider 生命周期结束。过期或关闭执行 fallback，反馈应作为单独 Signal。Connect 将已过期命令计入 dropped 并继续等待新命令；身份冲突、无效命令或真正的组件故障仍会报错。
 
-硬件协议参考：[Seyond 官方 ROS 驱动](https://github.com/Seyond-Inc/seyond_ros_driver)、[RealSense 官方 ROS 驱动](https://github.com/realsenseai/realsense-ros)。部署时应按实际设备型号、固件及驱动版本验证参数和消息格式。
+同机 deadline 使用共享的 CLOCK_MONOTONIC 纳秒。跨主机必须由 adapter 转换，不能直接比较两台机器的 monotonic 值。ROS1 adapter 使用握手/心跳估计保守 offset，网络延迟消耗有效期；远端再次限制最大 0.5 秒，并在线程 WatchDog 中发布零速。该机制不是电机执行确认，硬件驱动/固件的最终制动保障仍需独立验证。
+
+通用 CommandSink 的 deadman 是 provider 的 metered task，不能抢占同一循环的阻塞计算。因此应将计算组件与实际执行器 provider 隔离；底盘保护在远端兼容进程中执行，不依赖主机控制循环正常运行。
+
+## Placement 与通道绑定
+
+```python
+from rsim import Runtime, ProcessPlacement, LocalPlacement
+
+async with Runtime(analysis.pose, drive, placement={
+    analysis: ProcessPlacement("perception"),
+    navigation: ProcessPlacement("planning"),
+    chassis: LocalPlacement(),
+}):
+    pose = await analysis.pose.get()
+```
+
+放置位置不改变逻辑接口。也可在 Component 构造时给 placement。相同进程名共享一个 worker；拥有关系中的未显式放置资源跟随 owner，数据输入默认保持独立位置。共享资源被不同 owner 要求放到不同位置时，需显式指定位置。一个 Runtime 的跨进程通道使用同一 DDS domain，可选原生或 ROS2 后端。RosContext / DescriptorTransport 标记为 process_local，各拥有进程建立自己的上下文；它们不承载 Signal 数据，也不会因上下文复制而重复硬件 producer。
+
+| 边界 | 绑定 | 数据路径 |
+| --- | --- | --- |
+| 同一事件循环 | LocalReference | 同一个 Frame / payload 引用 |
+| 同 host 跨进程 | DDSChannel / SharedMemoryChannel | DDS 描述信息 + SharedStore / mmap |
+| 跨主机 ROS1 adapter | SSH topic 协议 | 序列化消息内容，主机解码 |
+
+部署计划只在需要跨边界的输出安装 materialization。内部 Component/Signal 不自动产生共享文件；多输出组件仍只计算一次。一个共享 allocator 复用同一普通数组的首次发布，多个读者映射相同 inode，原路径仍存在的完整只读 memmap 转发使用硬链接。明确需要直接共享分配时可以使用 `allocate()`；现有工厂式 ProcessSensor 为其安装 worker store，普通本地分配保持 NumPy 数组。
+
+Signal payload 支持标量、字典/列表/元组、NumPy 数组、Image、PointCloud，以及封闭 schema 的 Frame、CommandEnvelope、VelocityCommand。任意 Python 对象可在本地传递，但不能未经适配直接跨该通道；描述信息不反序列化任意 Python 类。工厂/部署代码只通过 cloudpickle 在同一应用解释器内启动；不同 Python 版本应用通过 SharedSensor 连接 provider，不交换工厂。
+
+跨进程 CommandSink 使用可靠、volatile 的请求/应答 topic。请求有去重 ID，payload 中的 envelope 在最终 provider 再次校验；通道先通过无执行副作用的握手确认发现；发现或应答延迟超过 deadline 的命令按过期丢弃，下一条新命令仍可继续，重试不改变 deadline。只导出端口，普通组件属性、设备句柄和 service 不变成远程 RPC。部署到其他进程后应只通过公开 Signals / CommandSinks 交互。
+
+## 生命周期与物理共享边界
+
+每个 worker 有独立的 lease supervisor。正常关闭、父端 EOF 或 SIGKILL 后，监督进程先 SIGTERM，超时再 SIGKILL，递归进程仍使用独立 lease。部署存储另有 guardian，处理父进程消失后的主机输入缓存和命令缓存回收。共享硬件 provider 仍使用同用户文件锁、Unix socket lease 和共享源监督进程，最后一个客户端退出才关闭。
+
+DDS 端点由 DescriptorTransport 的限速任务轮询。ROS 输入在 RosContext 中轮询 SingleThreadedExecutor，回调短入队，转换由 Component task 调度。WatchDog 检查任务异常和依赖失败；它无法抢占同一进程内的阻塞代码。
+
+DDS 只序列化 JSON 描述信息，数组不经过 DDS payload 序列化；ROS 驱动到 Python 的路径仍可能复制。这不等于 rclpy loan 或原生 DDS Data Sharing。每帧独立不可变文件，历史淘汰 unlink，不覆盖已有映射；慢读者可能跳过尚未映射且已被淘汰的帧。长期保留 Frame 的用户仍会持有相应内存页；若其文件路径已淘汰，之后再次导出只能重新写入数组，不能复用已经 unlink 的路径。
+
+临时运行存储属于 adapter 实现；实验资产统一保存在根目录 assets/。底层源去重和物理锁面向同机同 Unix 用户的协作使用者，不约束不使用本库的第三方发布者。
+
+## 从 Sensor 迁移
+
+- 自定义纯资源类改继承 Component；删除无意义的 history/get。
+- 单输出计算改继承 PrimaryComponent，使用 `.output`；旧 Sensor 仅为兼容基类。
+- 数据输入从 `super().__init__(source)` 改为 `super().__init__(inputs=(source.output,))`。资源依赖仍放 dependencies，不再用 children 推断数据输入。
+- Map.source 和 Bundle.sources 是 Signals；相机 `.image`、雷达 `.points`。底盘与 ROS2 镜像无聚合 get，需要快照时显式创建 Bundle。
+- 优先用 Runtime placement 移动既有组件；ProcessSensor 仍支持旧单输出工厂及嵌套，SharedSensor 保留独立环境的共享源租约。
+- ROS1 兼容协议升级为 v2，主机与远端脚本必须一起更新；v1 缺少 deadline/epoch 校验会被拒绝握手。
+
+可运行的多输出、同图两种部署和模拟控制见 [components.py](../examples/components.py) 与 [Notebook](../examples/components.ipynb)。原需求说明保留在 [重构文档](重构文档.md)。

@@ -21,9 +21,9 @@ def test_d435_profiles_share_one_driver_and_match_topic_namespace():
     assert depth.topic == f"{namespace}/{name}/depth/image_rect_raw"
     assert driver.parameters["depth_module.depth_profile"] == "480x270x15"
 
-    first = D435(depth_profile="480,270,15").children[0]
-    equivalent = D435(stream="color", depth_profile="480X270X15").children[0]
-    conflict = D435(depth_profile="480x270x6").children[0]
+    first = D435(depth_profile="480,270,15").source.producer
+    equivalent = D435(stream="color", depth_profile="480X270X15").source.producer
+    conflict = D435(depth_profile="480x270x6").source.producer
     assert first.source_key == equivalent.source_key == conflict.source_key
     assert first.version == equivalent.version
     assert first.version != conflict.version

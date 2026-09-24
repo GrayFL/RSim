@@ -1,13 +1,13 @@
 """Optional UVC-to-ROS adapter, run inside a worker because capture.read blocks."""
 import time
 
-from .core import Sensor, SensorError
+from .core import Component, ComponentError
 from .ros import RosContext, RosSensor
 
 
-class UvcPublisher(Sensor):
+class UvcPublisher(Component):
     def __init__(self, device, width, height, fps, topic):
-        super().__init__(RosContext(), key=f"driver:uvc:{device}", history=1)
+        super().__init__(RosContext(), key=f"driver:uvc:{device}")
         self.device, self.width, self.height, self.fps, self.topic = device, width, height, fps, topic
         self.capture = self.publisher = None
         self._device_lease = None
@@ -23,7 +23,7 @@ class UvcPublisher(Sensor):
         self._device_lease = acquire_device(self.key)
         self.capture = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
         if not self.capture.isOpened():
-            raise SensorError(f"cannot open UVC camera: {self.device}")
+            raise ComponentError(f"cannot open UVC camera: {self.device}")
         self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
@@ -35,7 +35,7 @@ class UvcPublisher(Sensor):
         from sensor_msgs.msg import Image
         ok, pixels = self.capture.read()
         if not ok:
-            raise SensorError("UVC capture failed")
+            raise ComponentError("UVC capture failed")
         now = time.time_ns()
         message = Image()
         message.header.stamp.sec, message.header.stamp.nanosec = divmod(now, 10**9)
@@ -49,10 +49,13 @@ class UvcPublisher(Sensor):
     async def close(self):
         if self.capture is not None:
             self.capture.release()
+            self.capture = None
         if self.publisher is not None:
             self.children[0].node.destroy_publisher(self.publisher)
+            self.publisher = None
         if self._device_lease is not None:
             self._device_lease.close()
+            self._device_lease = None
 
 
 class UvcCamera(RosSensor):

@@ -6,7 +6,7 @@ Backend dependencies are loaded only when a Runtime opens the transport.
 from dataclasses import dataclass, field
 import os
 
-from .core import Sensor
+from .core import Component
 
 
 @dataclass(frozen=True)
@@ -31,12 +31,13 @@ def transport_config(value=None):
     return value
 
 
-class DescriptorTransport(Sensor):
+class DescriptorTransport(Component):
     """One backend context shared by consumers in a Runtime and DDS domain."""
+    process_local = True
 
     def __init__(self, config=None, *, hz=1000):
         self.config = transport_config(config)
-        super().__init__(key=f"rsim:transport:{self.config.backend}:{self.config.domain_id}", history=1)
+        super().__init__(key=f"rsim:transport:{self.config.backend}:{self.config.domain_id}")
         self.hz, self.backend = hz, None
 
     def configuration(self):
@@ -55,11 +56,11 @@ class DescriptorTransport(Sensor):
     async def poll(self):
         self.backend.poll()
 
-    def subscribe(self, topic, callback):
-        return self.backend.subscribe(topic, callback)
+    def subscribe(self, topic, callback, **options):
+        return self.backend.subscribe(topic, callback, **options)
 
-    def publisher(self, topic):
-        return self.backend.publisher(topic)
+    def publisher(self, topic, **options):
+        return self.backend.publisher(topic, **options)
 
     async def close(self):
         if self.backend is not None:

@@ -3,8 +3,10 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
+import time
 
-from rsim import Chassis, Runtime, SSHConfig
+from rsim import (Chassis, Runtime, SSHConfig, Component, CommandMux, CommandInput, Connect,
+                  VelocityCommand)
 
 
 async def run(args):
@@ -15,10 +17,16 @@ async def run(args):
     chassis = Chassis(connection, imu_topic=args.imu, odom_topic=args.odom,
                       scan_topic=args.scan, cmd_vel_topic=args.cmd_vel, log_path=assets / "agent.log")
     root = chassis
+    extra_roots = ()
+    manual_stop = None
     if args.ros2:
         from rsim.remote_ros2 import ChassisROS2
-        root = ChassisROS2(chassis, prefix=args.ros2)
-    async with Runtime(root):
+        root = ChassisROS2(chassis, prefix=args.ros2, forward_commands=False)
+        manual_stop = Component().signal("stop")
+        mux = CommandMux(ros2=CommandInput(root.velocity_command, 10),
+                         stop_test=CommandInput(manual_stop, 100), fallback=VelocityCommand())
+        extra_roots = (Connect(mux.output, chassis.velocity),)
+    async with Runtime(root, *extra_roots):
         frames = await asyncio.gather(*(sensor.get(timeout=20)
                                        for sensor in (chassis.imu, chassis.odom, chassis.scan)))
         summary = {name: {"stamp_ns": frame.stamp_ns, "clock": frame.clock,
@@ -26,17 +34,21 @@ async def run(args):
                    for name, frame in zip(("imu", "odom", "scan"), frames)}
         summary["scan"]["beams"] = len(frames[2].data["ranges"])
         if args.stop_test:
-            summary["zero_velocity"] = await chassis.stop()
+            if manual_stop is None:
+                summary["zero_velocity"] = await chassis.stop()
+            else:
+                previous = chassis.velocity_feedback.frames[-1].sequence if chassis.velocity_feedback.frames else 0
+                await manual_stop.publish(VelocityCommand(), stamp_ns=time.monotonic_ns(), clock="host:monotonic")
+                acknowledgement = await chassis.velocity_feedback.get(after=previous, timeout=5)
+                summary["zero_velocity"] = acknowledgement.data["ack"]
         print(json.dumps(summary, indent=2), flush=True)
         (assets / "capture.json").write_text(json.dumps(summary, indent=2))
         previous = 0
         for _ in range(args.frames):
-            frame = await chassis.get(after=previous, timeout=10)
+            frame = await chassis.scan.get(after=previous, timeout=10)
             previous = frame.sequence
         if args.serve:
-            while True:
-                frame = await chassis.get(after=previous, timeout=10)
-                previous = frame.sequence
+            await root.wait()
 
 
 def main():

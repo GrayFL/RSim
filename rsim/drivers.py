@@ -97,14 +97,16 @@ def RobinW(
         setup["options"].arguments()
         return Source(history=history, log_path=log_path, _setup=setup)
 
-    return SharedSensor(
+    source = SharedSensor(
         factory,
         key=f"robin:{setup['ip']}",
         version="robin-v1",
         history=history,
         transport=transport,
-        provider_version=setup["options"].signature()
+        provider_version=setup["options"].signature(), output_name="points"
         )
+    source.points = source.output
+    return source
 
 
 def Camera(
@@ -124,13 +126,15 @@ def Camera(
         from .uvc import UvcCamera
         return UvcCamera(**config, history=history)
 
-    return SharedSensor(
+    source = SharedSensor(
         factory,
         key=f"uvc:{device}",
         version=json.dumps(config, sort_keys=True),
         history=history,
-        transport=transport
+        transport=transport, output_name="image"
         )
+    source.image = source.output
+    return source
 
 
 async def serve(sensor):

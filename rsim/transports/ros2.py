@@ -9,11 +9,11 @@ from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String
 
 
-def descriptor_qos():
+def descriptor_qos(*, durable=True, depth=16):
     return QoSProfile(
-        depth=16,
+        depth=depth,
         reliability=ReliabilityPolicy.RELIABLE,
-        durability=DurabilityPolicy.TRANSIENT_LOCAL
+        durability=DurabilityPolicy.TRANSIENT_LOCAL if durable else DurabilityPolicy.VOLATILE
         )
 
 
@@ -54,20 +54,20 @@ class Ros2Transport:
         self.executor = SingleThreadedExecutor(context=self.context)
         self.executor.add_node(self.node)
 
-    def subscribe(self, topic, callback):
+    def subscribe(self, topic, callback, **options):
         entity = self.node.create_subscription(
             String,
             topic, lambda msg: callback(msg.data),
-            descriptor_qos()
+            descriptor_qos(**options)
             )
         endpoint = Endpoint(self, entity, True)
         self.endpoints.append(endpoint)
         return endpoint
 
-    def publisher(self, topic):
+    def publisher(self, topic, **options):
         endpoint = Endpoint(
             self,
-            self.node.create_publisher(String, topic, descriptor_qos()),
+            self.node.create_publisher(String, topic, descriptor_qos(**options)),
             False
             )
         self.endpoints.append(endpoint)

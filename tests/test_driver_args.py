@@ -43,13 +43,13 @@ def test_camera_routing_enabled_streams_and_client_contract():
         "-p", "depth_module.depth_profile:=480,270,30",
         "-r", "__ns:=/rig", "-r", "__node:=front",
         "-r", "~/depth/image_rect_raw:=/measurements/depth"])
-    shared = provider.children[0]
-    client = ClientD435(serial="012345", depth_profile="480x270x30").children[0]
+    shared = provider.source.producer
+    client = ClientD435(serial="012345", depth_profile="480x270x30").source.producer
     assert (shared.source_key, shared.version) == (client.source_key, client.version)
     graph = shared.factory()
     assert graph.names == ("depth",)
-    assert graph.children[0].topic == "/measurements/depth"
-    driver = graph.children[0].children[1]
+    assert graph.sources["depth"].producer.topic == "/measurements/depth"
+    driver = graph.sources["depth"].producer.children[1]
     assert driver.key == "driver:d435:012345"
     assert driver.parameters["publish_tf"] is False
     with pytest.raises(ValueError, match="disabled"):
@@ -73,8 +73,8 @@ def test_cli_preserves_native_argv_and_matches_function():
               "-p", "rgb_camera.enable_auto_exposure:=false"]
     cli = _sensor_from_args(_parse_args(["d435", "--stream", "color", *native]))
     function = D435(stream="color", ros_args=native)
-    assert cli.children[0].provider_version == function.children[0].provider_version
-    assert cli.children[0].factory().names == ("color",)
+    assert cli.source.producer.provider_version == function.source.producer.provider_version
+    assert cli.source.producer.factory().names == ("color",)
     with pytest.raises(SystemExit):
         _parse_args(["camera", *native])
     with pytest.raises(SystemExit):

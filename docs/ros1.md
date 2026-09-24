@@ -1,17 +1,17 @@
 # ROS1 底盘与跨机器通信
 
-`Chassis` 将远端 IMU、里程计、2D 雷达组合成 Sensor，并提供异步速度发送接口。远端保留原有 ROS1 驱动；主机可以使用 ROS-free Python 环境，也可以选择将数据发布为标准 ROS2 话题。
+`Chassis` 将远端 IMU、里程计、2D 雷达暴露为命名 Signals，并提供 velocity CommandSink。远端保留原有 ROS1 驱动；主机可以使用 ROS-free Python 环境，也可以选择将数据发布为标准 ROS2 话题。
 
 ```mermaid
 flowchart LR
   A[ROS1 设备驱动] <-->|本机 TCPROS| B[Python 2.7/3 兼容入口]
   B <-->|SSH · 消息内容| C[主机 Chassis / Ros1Bridge]
-  C --> D[Sensor.get / 历史 / 组合]
+  C --> D[Signal.get / 历史 / 组合]
   C <-->|可选| E[ROS2 话题 / DDS]
   C --> F[可选 SharedSensor / 本机共享数组]
 ```
 
-跨机器通道传输消息内容，不转发另一台机器上的 mmap 路径。数值数组使用小端二进制 + base64，保留 dtype、`Inf` 和 `NaN`；主机解码为只读 NumPy 数组。包装进 `ProcessSensor` / `SharedSensor` 后，继续使用本机 DDS 描述信息和共享内存。网络段需要序列化和复制，不属于零拷贝。
+跨机器通道传输消息内容，不转发另一台机器上的 mmap 路径。数值数组使用小端二进制 + base64，保留 dtype、`Inf` 和 `NaN`；主机解码为只读 NumPy 数组。通过 `Runtime(..., placement={chassis: ProcessPlacement("chassis")})` 可在本机子进程运行同一组件；端口通过 DDS 和共享内存绑定。网络段需要序列化和复制，不属于零拷贝。
 
 ## 准备远端
 
@@ -24,7 +24,7 @@ ssh "$ROBOT_HOST" "mkdir -p '$REMOTE_DIR/compat'"
 scp compat/ros1_agent.py "$ROBOT_HOST:$REMOTE_DIR/compat/ros1_agent.py"
 ```
 
-现有 ROS master 和设备驱动应先启动。兼容层只连接它们，不启动或重启底盘驱动，不改 ROS master，也不需要开放新 TCP 服务端口。SSH 使用已有的密钥与 known_hosts，适用于已有 SSH 别名。
+当前主机与远端脚本必须均使用协议 v2；旧脚本缺少命令期限校验，会被拒绝握手。现有 ROS master 和设备驱动应先启动。兼容层只连接它们，不启动或重启底盘驱动，不改 ROS master，也不需要开放新 TCP 服务端口。SSH 使用已有的密钥与 known_hosts，适用于已有 SSH 别名。
 
 ## 库式调用
 
@@ -63,7 +63,7 @@ async with Runtime(chassis):
 
 `get()` 返回统一的 Frame，data 是普通字典及只读数组，不包含 ROS message 实例。ROS 原始字段保留在字典内；源时间戳以整数纳秒保存，时间域为 `ros1:<SSH host>`，`received_ns` 使用主机接收时间。源机器和主机的时钟并未自动同步，不能直接相减当作传输时延。
 
-`await chassis.get()` 返回三路最新样本组成的 Bundle，不保证时间对齐；只读单个设备时也可独立使用下面的 topic 工厂，避免等待其他设备的首帧。
+Chassis 是多输出组件，没有默认 get；需要快照时显式创建 `Bundle(imu=chassis.imu, odom=chassis.odom, scan=chassis.scan)`，需要时间对齐则使用 Synchronizer。`chassis.state` 提供连接/命令状态。只读单个设备也可使用下面的 topic 工厂。
 
 ```python
 from rsim import Ros1Bridge, Runtime
@@ -78,7 +78,7 @@ async with Runtime(sensor):
 
 订阅省略 message_type 时从现有已发布话题推断。发布使用 `await bridge.publish_message(topic, message_type, data)`，data 是 ROS 字段字典；未知字段、类型错误、无订阅者会报错。发布端消息值目前使用 JSON 标量、字典和列表，读取端的 NumPy 数组需要先转成列表。
 
-相同 SSH 配置、topic、速率和 history 在同一个 Runtime 内复用连接及订阅。组合后的 `sensor.bridge`、`chassis.bridge` 指向实际活动的连接。不同进程希望共用一份采集时，在主机用 `SharedSensor(lambda: Chassis(connection, ...), key=..., version=...)` 显式建立共享源；将完整连接及 topic 配置计入 version。共享源的帧包含全部字段，跨进程命令 RPC 仍需使用独立控制端或下方 ROS2 入口。
+相同 SSH 配置、topic、速率和 history 在同一个 Runtime 内复用连接及订阅。组合后的 `sensor.bridge`、`chassis.bridge` 指向实际活动的连接。同一 Runtime 可把 chassis 放入 ProcessPlacement，多路 Signal 和 velocity 均可跨进程访问。独立客户端需要共享只读采集时，SharedSensor 工厂应返回显式 Bundle 或一个选定的 Signal；不要把多输出 Chassis 当作单输出工厂。将完整连接及 topic 配置计入 version。
 
 ## ROS2 / DDS 双向话题
 
@@ -115,11 +115,13 @@ python -m examples.chassis --host "$ROBOT_HOST" \
 
 ## 生命周期与控制语义
 
-所有主机收发、心跳、转换、命令服务任务由 Runtime / Metronome / WatchDog 管理。远端 rospy 回调只保留每话题最新样本，主机也使用有界队列；这是最新帧接口，不保证无损录像。现有 Sensor 的 `hz` / `history` 语义保持不变。
+所有主机收发、心跳、转换、命令服务任务由 Runtime / Metronome / WatchDog 管理。远端 rospy 回调只保留每话题最新样本，主机也使用有界队列；这是最新帧接口，不保证无损录像。Component task 的 hz 和 Signal history 语义保持不变。
 
-退出 Runtime 会关闭 SSH 标准输入，使远端取消订阅并释放其发布者。主进程异常退出时，本机 SSH 子进程受 parent-death 保护；远端还有 10 秒心跳期限。ROS master 不可用时，启动阶段有 15 秒期限，客户端提前离开也会退出。连接故障会传播到等待中的请求和 `get()`，不会无限返回旧帧；重新进入 Runtime 建立新会话，不自动重放控制消息。
+退出 Runtime 会关闭 SSH 标准输入，使远端取消订阅并释放其发布者。主进程异常退出时，本机 SSH 子进程受 parent-death 保护；远端还有 10 秒心跳期限。ROS master 不可用时，启动阶段有 15 秒期限，客户端提前离开也会退出。连接故障会传播到等待中的请求和 `get()`，不会无限返回旧帧；重新进入 Runtime 建立新会话，不自动重放控制消息。Chassis 打开时注册速度 publisher，但不发送速度；命令时限涵盖排队和传输，过期拒绝不会关闭健康的 SSH 会话。
 
-速度通过 `set_velocity(linear, angular)` 发送，分别为前向 m/s、绕 z 轴 rad/s；默认均为零。所有 `geometry_msgs/Twist` 发布均不 latch，远端在最后一次命令后 0.5 秒或连接关闭时发送零速。持续控制需要持续刷新；软件发送零速不等于已确认电机制动。
+速度使用 `await chassis.velocity.set(VelocityCommand(linear_x, angular_z), ttl=.25)`，分别为前向 m/s、绕 z 轴 rad/s；默认均为零。兼容快捷方法 set_velocity / stop 也经过该 sink。v2 命令携带 controller_id、epoch、sequence、deadline，主机保守转换 monotonic 时钟域，远端在实际发布前检查过期、倒序、重放和独占会话，并限制最大 0.5 秒 TTL。远端线程在期限到达或会话结束时发送零速；持续控制必须刷新，软件零速不等于电机制动确认。多个 RSim SSH 会话还使用底盘本机的协作锁保护同一命令 topic。
+
+ROS2 镜像默认通过一个 Connect 占有底盘 velocity；其他控制源需使用 `ChassisROS2(..., forward_commands=False)`，将 relay.velocity_command 与其他 Signals 一起接入 CommandMux。直接在已被 Connect 占有的 sink 调用 stop/set 会被拒绝；需要通过仲裁后的来源发送零值。镜像只接受平面 linear.x / angular.z，其他非零分量报错。
 
 发布应答表示 ROS1 已有订阅连接、消息通过校验并交给 rospy。它不代表某个特定订阅者执行完成。验证真实到达时，应使用底盘侧独立订阅者，并核对发布节点身份；仅收到本地应答不能当作执行证明。
 

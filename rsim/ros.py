@@ -1,4 +1,4 @@
-"""Optional ROS 2 ingress. ROS messages never escape through Sensor.get()."""
+"""Optional ROS 2 ingress. ROS messages never escape through Signal.get()."""
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +12,7 @@ import uuid
 
 import numpy as np
 
-from .core import Sensor, SensorError
+from .core import Component, PrimaryComponent, ComponentError
 from .model import Image, PointCloud
 from ._driver_config import d435_setup, robin_setup
 from ._ros_args import RosArguments
@@ -80,10 +80,11 @@ def image_array(msg):
     return Image(result, msg.encoding, msg.header.frame_id)
 
 
-class RosContext(Sensor):
+class RosContext(Component):
+    process_local = True
 
     def __init__(self, *, hz=1000):
-        super().__init__(key="rsim:ros-context", history=1)
+        super().__init__(key="rsim:ros-context")
         self.hz = hz
         self.node = self.context = self.executor = None
 
@@ -118,9 +119,10 @@ class RosContext(Sensor):
             self.node.destroy_node()
         if self.context is not None:
             self.context.try_shutdown()
+        self.node = self.context = self.executor = None
 
 
-class Driver(Sensor):
+class Driver(Component):
     """Direct native executable launch, guarded against parent death on Linux."""
 
     def __init__(
@@ -134,7 +136,7 @@ class Driver(Sensor):
             remappings=None,
             ros_args=None
         ):
-        super().__init__(key=key, history=1)
+        super().__init__(key=key)
         self.package, self.executable = package, executable
         self.options = parameters if isinstance(parameters, RosArguments) else RosArguments(
             parameters, ros_args, remappings)
@@ -146,6 +148,11 @@ class Driver(Sensor):
 
     def configuration(self):
         return super().configuration(), self.package, self.executable, self.options.signature()
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state.update(process=None, _log=None, _device_lease=None)
+        return state
 
     async def open(self):
         from ament_index_python.packages import get_package_prefix
@@ -170,7 +177,7 @@ class Driver(Sensor):
 
     async def check(self):
         if self.process.returncode is not None:
-            raise SensorError(
+            raise ComponentError(
                 f"{self.package} driver exited: {self.process.returncode}"
                 )
 
@@ -189,19 +196,22 @@ class Driver(Sensor):
         finally:
             if self._log is not None:
                 self._log.close()
+                self._log = None
             if self._device_lease is not None:
                 self._device_lease.close()
+                self._device_lease = None
 
 
-class RosSensor(Sensor):
+class RosSensor(PrimaryComponent):
 
     def __init__(
             self, topic, kind, *, clock, driver=None, hz=200, history=16
         ):
         children = (RosContext(), ) + ((driver, ) if driver else ())
         super().__init__(
-            *children, key=f"ros:{kind}:{topic}", history=history
+            *children, key=f"ros:{kind}:{topic}", history=history, output_name=kind, clock=clock
             )
+        setattr(self, kind, self.output)
         self.topic, self.kind, self.clock, self.hz = topic, kind, clock, hz
         self.pending = deque(maxlen=2)
         self.subscription = None
@@ -253,6 +263,7 @@ class RosSensor(Sensor):
     async def close(self):
         if self.subscription is not None:
             self.children[0].node.destroy_subscription(self.subscription)
+            self.subscription = None
         self.pending.clear()
 
 

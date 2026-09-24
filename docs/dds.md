@@ -1,6 +1,6 @@
 # ROS 驱动与 DDS 应用分离
 
-RSim 将驱动启动和应用连接分为两个入口。`rsim.drivers` 在具备设备驱动的环境中启动共享源；`rsim` 的设备工厂只连接已有源。两侧仍使用同一套 `Sensor`、`Runtime`、`get()` 和组合接口。
+RSim 将驱动启动和应用连接分为两个入口。`rsim.drivers` 在具备设备驱动的环境中启动共享源；`rsim` 的设备工厂只连接已有源。两侧仍使用同一套 `Component`、`Signal.get()`、`Runtime` 和组合接口。
 
 ## 运行两个独立环境
 
@@ -64,7 +64,7 @@ transport = TransportConfig(backend="cyclonedds", domain_id=0)
 camera = D435(transport=transport)
 ```
 
-`ProcessSensor`、`SharedSensor` 以及设备工厂均接受 `transport`。未传时，后端取 `RSIM_TRANSPORT`（默认 `cyclonedds`），domain 取 `ROS_DOMAIN_ID`（默认 0）。新建 worker 会继承所选 domain 和后端；显式指定 domain 时，worker 内的 ROS 驱动也使用该 domain。已有源的客户端可以选不同后端，但必须位于同一 domain。
+`ProcessSensor`、`SharedSensor` 以及设备工厂均接受 `transport`；新建图可用 `ProcessPlacement(name, transport=...)` 选择部署后端，见 [架构文档](architecture.md)。未传时，后端取 `RSIM_TRANSPORT`（默认 `cyclonedds`），domain 取 `ROS_DOMAIN_ID`（默认 0）。新建 worker 会继承所选 domain 和后端；显式指定 domain 时，worker 内的 ROS 驱动也使用该 domain。已有源的客户端可以选不同后端，但必须位于同一 domain。
 
 通用共享数据源同样支持生产与连接分离：
 
@@ -94,6 +94,8 @@ client = SharedSensor(key="counter", version="1")
 | QoS | Reliable、TransientLocal、KeepLast(16) |
 
 topic 前缀遵循 [ROS 2 到 DDS 的命名映射](https://design.ros2.org/articles/topic_and_service_names.html)。原生端定义等价 IDL 类型，不导入 `std_msgs`。ROS 与原生 DDS 端点直接发现并互通，没有额外 domain、数据转发桥或第二套数组缓冲。
+
+新部署的 Signal 通道使用 `/rsim/channels/p<端口实例标识>`，数据 QoS 与上表一致。CommandSink 使用 `/rsim/commands/p<端口实例标识>/request` 和 `/reply`，可靠、volatile，不保留历史命令。命令重试保留原 deadline，并在 provider 去重和校验。
 
 `Frame`、`Image`、`PointCloud` 位于独立的 `rsim.model`；公共包也重导出这些类型。历史查询、时间域和接收时刻语义不变。
 

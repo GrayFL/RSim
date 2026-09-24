@@ -16,7 +16,7 @@ from dataclasses import asdict
 
 import cloudpickle
 
-from .core import SensorError
+from .core import ComponentError
 from .process import ProcessSensor
 
 
@@ -24,7 +24,7 @@ def registry_directory():
     directory = Path(tempfile.gettempdir()) / f"rsim-host-{os.getuid()}"
     directory.mkdir(mode=0o700, exist_ok=True)
     if directory.is_symlink() or directory.stat().st_uid != os.getuid():
-        raise SensorError("source registry is not owned by the current user")
+        raise ComponentError("source registry is not owned by the current user")
     os.chmod(directory, 0o700)
     return directory
 
@@ -43,8 +43,8 @@ class SharedSensor(ProcessSensor):
     """
 
     def __init__(self, factory=None, *, key, version="1", history=16, hz=200, transport=None,
-                 provider_version=None):
-        super().__init__(factory, history=history, hz=hz, transport=transport)
+                 provider_version=None, output_name="output"):
+        super().__init__(factory, history=history, hz=hz, transport=transport, output_name=output_name)
         self.source_key, self.version = key, version
         self.provider_version = provider_version
         self._reader = self._writer = None
@@ -84,7 +84,7 @@ class SharedSensor(ProcessSensor):
                     state = candidate
             if state is None:
                 if self.factory is None:
-                    raise SensorError(f"source is not running in DDS domain {self.transport.domain_id}: "
+                    raise ComponentError(f"source is not running in DDS domain {self.transport.domain_id}: "
                                       f"{self.source_key}; start its provider first")
                 state = self._launch(signature, socket_path, lock_path, state_path)
                 self._reader, self._writer = await asyncio.open_connection(sock=self._initial_client)
@@ -142,7 +142,7 @@ class SharedSensor(ProcessSensor):
 
     async def receive(self):
         if self._reader.at_eof():
-            raise SensorError("shared source supervisor disconnected")
+            raise ComponentError("shared source supervisor disconnected")
         await super().receive()
 
     async def close(self):
@@ -150,6 +150,7 @@ class SharedSensor(ProcessSensor):
             self._writer.close()
             await self._writer.wait_closed()
             self._writer = None
+        self._reader = None
         initial = getattr(self, "_initial_client", None)
         if initial is not None:
             initial.close()
