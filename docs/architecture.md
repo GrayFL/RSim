@@ -99,7 +99,7 @@ async with Runtime(analysis.pose, drive, placement={
 
 部署计划只在需要跨边界的输出安装 materialization。内部 Component/Signal 不自动产生共享文件；多输出组件仍只计算一次。一个共享 allocator 复用同一普通数组的首次发布，多个读者映射相同 inode，原路径仍存在的完整只读 memmap 转发使用硬链接。明确需要直接共享分配时可以使用 `allocate()`；现有工厂式 ProcessSensor 为其安装 worker store，普通本地分配保持 NumPy 数组。
 
-Signal payload 支持标量、字典/列表/元组、NumPy 数组、Image、PointCloud，以及封闭 schema 的 Frame、CommandEnvelope、VelocityCommand。任意 Python 对象可在本地传递，但不能未经适配直接跨该通道；描述信息不反序列化任意 Python 类。工厂/部署代码只通过 cloudpickle 在同一应用解释器内启动；不同 Python 版本应用通过 SharedSensor 连接 provider，不交换工厂。
+Signal payload 支持标量、字典/列表/元组、NumPy 数组、Image、PointCloud，以及封闭 schema 的 Frame、CommandEnvelope、VelocityCommand。安装可选 graphmap 依赖后，也支持以平移、四元数、尺度和坐标标签编码的 Pose，见 [位姿融合与底盘控制](motion.md)。任意 Python 对象可在本地传递，但不能未经适配直接跨该通道；描述信息不反序列化任意 Python 类。工厂/部署代码只通过 cloudpickle 在同一应用解释器内启动；不同 Python 版本应用通过 SharedSensor 连接 provider，不交换工厂。
 
 跨进程 CommandSink 使用可靠、volatile 的请求/应答 topic。请求有去重 ID，payload 中的 envelope 在最终 provider 再次校验；通道先通过无执行副作用的握手确认发现；发现或应答延迟超过 deadline 的命令按过期丢弃，下一条新命令仍可继续，重试不改变 deadline。只导出端口，普通组件属性、设备句柄和 service 不变成远程 RPC。部署到其他进程后应只通过公开 Signals / CommandSinks 交互。
 

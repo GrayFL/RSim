@@ -4,6 +4,7 @@ __pycache__/
 build/
 dist/
 assets
+/configs
 AGENTS.md
 PROJECT.md
 .*

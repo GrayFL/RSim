@@ -147,6 +147,53 @@ async def serve(sensor):
             frame = await sensor.get(after=frame.sequence)
 
 
+def Hipnuc(port=None, *, mode="serial", baudrate=115200, frame_id="hipnuc_imu",
+           navigation_frame="device_navigation", history=128, parameters=None,
+           ros_args=None, transport=None, log_path=None):
+    """One shared serial device, through Python or the rsim_hipnuc ROS2 node."""
+    from .imu import serial_port
+    from ._ros_args import RosArguments
+    if mode not in ("serial", "ros2"):
+        raise ValueError("IMU mode must be serial or ros2")
+    defaults = dict(port=port or "", baudrate=baudrate, frame_id=frame_id,
+                    navigation_frame=navigation_frame, history=history)
+    values = {**defaults, **(parameters or {})}
+    options = None
+    if mode == "ros2":
+        options = RosArguments(values, ros_args)
+        with options.resolve("hipnuc_imu") as node:
+            values = {name: node.get_parameter(name).value for name in node.list_parameters([], depth=0).names}
+            topic = node.resolve_topic_name("imu/data")
+        port = serial_port(values["port"])
+        # Freeze auto-discovery before starting a shared worker. Later user ROS
+        # overrides still take precedence and resolved to this same port above.
+        options.parameters["port"] = port
+    else:
+        if ros_args:
+            raise ValueError("ros_args requires mode='ros2'")
+        port = serial_port(values["port"])
+        values["port"] = port
+    log_path = str(Path(log_path).resolve()) if log_path is not None else None
+
+    def factory():
+        if mode == "serial":
+            from .imu import SerialIMU
+            return SerialIMU(**values)
+        from .ros import Driver, RosSensor
+        driver = Driver("rsim_hipnuc", "serial_node", options,
+                        key="hipnuc-node:" + port, log_path=log_path)
+        # The serial endpoint owns the physical-port lock in both modes.
+        return RosSensor(topic, "imu", clock="ros:sim" if values.get("use_sim_time") else "ros:system",
+                         driver=driver, history=history, hz=500)
+
+    signature = options.signature() if options is not None else json.dumps(values, sort_keys=True)
+    source = SharedSensor(factory, key="hipnuc:" + port, version="hipnuc-v1", history=history,
+                          hz=500, transport=transport, provider_version=mode + ":" + signature,
+                          output_name="imu")
+    source.imu = source.output
+    return source
+
+
 def _parse_args(argv=None):
     import argparse
     import sys
@@ -158,7 +205,11 @@ def _parse_args(argv=None):
         epilog="Append --ros-args -p NAME:=VALUE --params-file FILE -r FROM:=TO "
         "to pass native ROS options to d435/robin."
         )
-    parser.add_argument("device", choices=("d435", "robin", "camera"))
+    parser.add_argument("device", choices=("d435", "robin", "camera", "imu"))
+    parser.add_argument("--port", help="IMU serial port; automatic only with one CP210x")
+    parser.add_argument("--baudrate", type=int, default=115200)
+    parser.add_argument("--imu-mode", choices=("serial", "ros2"), default="serial")
+    parser.add_argument("--frame-id", default="hipnuc_imu")
     parser.add_argument("--serial", default="")
     parser.add_argument("--ip")
     parser.add_argument("--camera-device", default="/dev/video0")
@@ -211,6 +262,9 @@ def _sensor_from_args(args):
             log_path=args.log_path,
             **common
             )
+    elif args.device == "imu":
+        return Hipnuc(args.port, mode=args.imu_mode, baudrate=args.baudrate,
+                      frame_id=args.frame_id, ros_args=args.ros_args, log_path=args.log_path, **common)
     else:
         return Camera(args.camera_device, **common)
 

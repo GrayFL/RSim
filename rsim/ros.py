@@ -80,6 +80,15 @@ def image_array(msg):
     return Image(result, msg.encoding, msg.header.frame_id)
 
 
+def imu_data(msg):
+    data = {"header": {"frame_id": msg.header.frame_id}}
+    for name, axes in (("orientation", "xyzw"), ("angular_velocity", "xyz"),
+                       ("linear_acceleration", "xyz")):
+        data[name] = {axis: float(getattr(getattr(msg, name), axis)) for axis in axes}
+        data[name + "_covariance"] = list(getattr(msg, name + "_covariance"))
+    return data
+
+
 class RosContext(Component):
     process_local = True
 
@@ -228,7 +237,7 @@ class RosSensor(PrimaryComponent):
             )
 
     async def open(self):
-        from sensor_msgs.msg import Image as RosImage, PointCloud2
+        from sensor_msgs.msg import Image as RosImage, PointCloud2, Imu
         from rclpy.qos import qos_profile_sensor_data
         self.pending.clear()
 
@@ -238,7 +247,7 @@ class RosSensor(PrimaryComponent):
             self.pending.append((msg, time.time_ns()))
 
         self.subscription = self.children[0].node.create_subscription(
-            PointCloud2 if self.kind == "points" else RosImage,
+            {"points": PointCloud2, "image": RosImage, "imu": Imu}[self.kind],
             self.topic,
             receive,
             qos_profile_sensor_data
@@ -249,9 +258,7 @@ class RosSensor(PrimaryComponent):
         if not self.pending:
             return
         msg, received_ns = self.pending.popleft()
-        data = pointcloud_array(
-            msg
-            ) if self.kind == "points" else image_array(msg)
+        data = {"points": pointcloud_array, "image": image_array, "imu": imu_data}[self.kind](msg)
         await self.publish(
             data,
             stamp_ns=msg.header.stamp.sec * 10**9

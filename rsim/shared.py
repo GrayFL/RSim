@@ -13,6 +13,7 @@ import math
 import shutil
 import uuid
 import weakref
+import sys
 from dataclasses import fields, replace
 
 import numpy as np
@@ -26,6 +27,13 @@ def _records():
     from .model import Frame
     from .commands import CommandEnvelope, VelocityCommand
     return {cls.__name__: cls for cls in (Frame, CommandEnvelope, VelocityCommand)}
+
+
+def _is_pose(data):
+    # Keep graphmap optional for camera/lidar-only clients. Its class must
+    # already be loaded for an actual Pose instance to exist.
+    module = sys.modules.get("graphmap.pose")
+    return module is not None and type(data) is module.Pose
 
 
 def allocate(shape, dtype=np.float64):
@@ -118,6 +126,10 @@ class SharedStore:
 
     def _encode(self, data, directory):
         from .model import PointCloud, Image
+        if _is_pose(data):
+            return {"type": "graphmap_pose", "translation": data.position.tolist(),
+                    "quaternion": data.quat.tolist(), "scale": data.scale,
+                    "wrd_frame": data.wrd_frame, "ego_frame": data.ego_frame}
         if isinstance(data, np.ndarray):
             if data.dtype.hasobject:
                 raise TypeError("object arrays cannot be shared")
@@ -169,6 +181,10 @@ class SharedStore:
 def decode(data, allowed_directory):
     from .model import PointCloud, Image
     kind = data["type"]
+    if kind == "graphmap_pose":
+        from graphmap.pose import Pose
+        return Pose(position=data["translation"], rotation=data["quaternion"],
+                    scale=data["scale"], wrd_frame=data["wrd_frame"], ego_frame=data["ego_frame"])
     if kind == "array":
         path = Path(data["path"]).resolve()
         if not path.is_relative_to(Path(allowed_directory).resolve()):

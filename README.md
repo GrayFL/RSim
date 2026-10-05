@@ -84,6 +84,10 @@ async with Runtime(snapshot.output):
 
 `Chassis` 将 ROS1 设备映射为 `imu / odom / scan / state` Signals 和 `velocity` CommandSink。远端兼容 Python 2.7，主机无需 ROS1；SSH 网络段传输消息内容。部署和零速测试见 [ROS1 文档](docs/ros1.md)。
 
+HiPNUC IMU 支持 Python 串口直读与 ROS2 节点两种模式，均通过 `.imu.get()` 返回数据，见 [IMU 接入](docs/imu.md)。`load_rig()` 可读取 YAML 初始化设备、复用嵌套组合中的同一个传感器，并用 graphmap Pose 表示安装外参，见 [配置与组装](docs/configuration.md)。
+
+`PlanarOdometry` 融合轮式 odom 与 IMU 角速度，输出 `graphmap.pose.Pose`；`ChassisController` 提供 `await move(distance_m)`、`await rotate(yaw_deg=... / yaw_rad=...)` 和 `await stop()`。运动默认关闭，详见 [位姿融合与底盘控制](docs/motion.md)。
+
 ## 控制与仲裁
 
 ```python
@@ -113,6 +117,8 @@ async with Runtime(drive):
 
 ## 示例与验证
 
+- [IMU 与配置组装 Notebook](examples/imu_rig.ipynb)：Python/ROS2 两种采集方式、固定外参、共享的嵌套组合。
+- [底盘控制 Notebook](examples/chassis_motion.ipynb)：EKF 位姿、异步前进/后退/旋转；默认内存模拟，实机部分只发零速。
 - [Component / Signal Notebook](examples/components.ipynb)：多输出、fan-out、进程部署、模拟控制与手动覆盖，无需硬件。
 - [D435 Notebook](examples/d435.ipynb)：彩色与深度、历史回查、图像和采集资产。
 - [无 ROS 客户端 Notebook](examples/dds_client.ipynb)：连接另一解释器已启动的相机。

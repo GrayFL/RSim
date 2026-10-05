@@ -10,6 +10,9 @@ requires-python = ">=3.12"
 dependencies = ["numpy>=1.26", "cloudpickle>=3"]
 
 [project.optional-dependencies]
+imu = ["pyserial>=3.5", "graphmap>=0.1.0"]
+config = ["PyYAML>=6", "graphmap>=0.1.0"]
+motion = ["graphmap>=0.1.0"]
 dds = ["cyclonedds>=0.10.5"]
 test = ["pytest>=8"]
 
