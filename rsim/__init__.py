@@ -1,40 +1,119 @@
-from .core import Component, ComponentError, PrimaryComponent, HistoryMiss, Metronome, Reference, Runtime, Sensor, SensorError
-from .signal import Signal
-from .clocks import ClockDomain, ClockTransform
-from .sync import Synchronizer, TimeJoin
-from .commands import (CommandSink, CommandEnvelope, VelocityCommand, VelocityCommandEnvelope,
-                       CommandGuard, CommandRejected, CommandInput, CommandMux, Arbiter, Connect)
-from .model import Frame, Image, PointCloud
-from .compose import Bundle, Map
-from .devices import Camera, D435, RobinW, Hipnuc
-from .host import SharedSensor
-from .process import ProcessSensor
-from .shared import allocate
-from .transport import TransportConfig
-from .remote import Chassis, Ros1Bridge, SSHConfig
-from .deployment import LocalPlacement, ProcessPlacement, LocalReference, SharedMemoryChannel, DDSChannel
+"""Async robot components. Public conveniences load their owning package on demand."""
+from importlib import import_module
 
-__all__ = ["Component", "ComponentError", "PrimaryComponent", "Signal", "Frame", "HistoryMiss", "Metronome", "Runtime", "Sensor", "SensorError",
-           "Bundle", "Map", "Camera", "D435", "RobinW", "SharedSensor", "ProcessSensor", "allocate",
-           "Reference", "Image", "PointCloud", "TransportConfig", "Chassis", "Ros1Bridge", "SSHConfig",
-           "ClockDomain", "ClockTransform", "Synchronizer", "TimeJoin", "CommandSink", "CommandEnvelope",
-           "VelocityCommand", "VelocityCommandEnvelope", "CommandGuard", "CommandRejected", "CommandInput",
-           "CommandMux", "Arbiter", "Connect", "LocalPlacement", "ProcessPlacement", "LocalReference",
-           "SharedMemoryChannel", "DDSChannel", "Hipnuc"]
+_EXPORTS = {
+    'Component': ('rsim.core', 'Component'),
+    'ComponentError': ('rsim.core', 'ComponentError'),
+    'PrimaryComponent': ('rsim.core', 'PrimaryComponent'),
+    'HistoryMiss': ('rsim.core', 'HistoryMiss'),
+    'Metronome': ('rsim.core.metronome', 'Metronome'),
+    'Reference': ('rsim.core', 'Reference'),
+    'Runtime': ('rsim.runtime.graph', 'Runtime'),
+    'Sensor': ('rsim.core', 'Sensor'),
+    'SensorError': ('rsim.core', 'SensorError'),
+    'Signal': ('rsim.core.signal', 'Signal'),
+    'ClockDomain': ('rsim.core.clocks', 'ClockDomain'),
+    'ClockTransform': ('rsim.core.clocks', 'ClockTransform'),
+    'Synchronizer': ('rsim.core.sync', 'Synchronizer'),
+    'TimeJoin': ('rsim.core.sync', 'TimeJoin'),
+    'CommandSink': ('rsim.core.commands', 'CommandSink'),
+    'CommandEnvelope': ('rsim.core.commands', 'CommandEnvelope'),
+    'VelocityCommand': ('rsim.core.commands', 'VelocityCommand'),
+    'VelocityCommandEnvelope': ('rsim.core.commands', 'VelocityCommandEnvelope'),
+    'CommandGuard': ('rsim.core.commands', 'CommandGuard'),
+    'CommandRejected': ('rsim.core.commands', 'CommandRejected'),
+    'CommandInput': ('rsim.core.commands', 'CommandInput'),
+    'CommandMux': ('rsim.core.commands', 'CommandMux'),
+    'Arbiter': ('rsim.core.commands', 'Arbiter'),
+    'Connect': ('rsim.core.commands', 'Connect'),
+    'Frame': ('rsim.core.model', 'Frame'),
+    'Image': ('rsim.core.model', 'Image'),
+    'PointCloud': ('rsim.core.model', 'PointCloud'),
+    'Bundle': ('rsim.core.compose', 'Bundle'),
+    'Map': ('rsim.core.compose', 'Map'),
+    'Camera': ('rsim.devices', 'Camera'),
+    'D435': ('rsim.devices', 'D435'),
+    'RobinW': ('rsim.devices', 'RobinW'),
+    'Hipnuc': ('rsim.devices', 'Hipnuc'),
+    'SharedSensor': ('rsim.runtime.host', 'SharedSensor'),
+    'ProcessSensor': ('rsim.runtime.process', 'ProcessSensor'),
+    'allocate': ('rsim.transport.shared', 'allocate'),
+    'TransportConfig': ('rsim.transport.descriptor', 'TransportConfig'),
+    'Chassis': ('rsim.adapters.ros1', 'Chassis'),
+    'Ros1Bridge': ('rsim.adapters.ros1', 'Ros1Bridge'),
+    'SSHConfig': ('rsim.adapters.ros1', 'SSHConfig'),
+    'LocalPlacement': ('rsim.runtime.deployment', 'LocalPlacement'),
+    'ProcessPlacement': ('rsim.runtime.deployment', 'ProcessPlacement'),
+    'LocalReference': ('rsim.runtime.deployment', 'LocalReference'),
+    'SharedMemoryChannel': ('rsim.runtime.deployment', 'SharedMemoryChannel'),
+    'DDSChannel': ('rsim.runtime.deployment', 'DDSChannel'),
+    'load_rig': ('rsim.config', 'load_rig'),
+    'SensorRig': ('rsim.config', 'SensorRig'),
+    'Mount': ('rsim.config', 'Mount'),
+    'UncalibratedMount': ('rsim.config', 'UncalibratedMount'),
+    'SerialIMU': ('rsim.adapters.hipnuc', 'SerialIMU'),
+    'PlanarOdometry': ('rsim.components.odometry', 'PlanarOdometry'),
+    'ChassisController': ('rsim.components.motion', 'ChassisController'),
+    'MotionError': ('rsim.components.motion', 'MotionError'),
+}
+# Keep optional geometry, motion and serial exports out of star imports.
+__all__ = [
+    'Component',
+    'ComponentError',
+    'PrimaryComponent',
+    'Signal',
+    'Frame',
+    'HistoryMiss',
+    'Metronome',
+    'Runtime',
+    'Sensor',
+    'SensorError',
+    'Bundle',
+    'Map',
+    'Camera',
+    'D435',
+    'RobinW',
+    'SharedSensor',
+    'ProcessSensor',
+    'allocate',
+    'Reference',
+    'Image',
+    'PointCloud',
+    'TransportConfig',
+    'Chassis',
+    'Ros1Bridge',
+    'SSHConfig',
+    'ClockDomain',
+    'ClockTransform',
+    'Synchronizer',
+    'TimeJoin',
+    'CommandSink',
+    'CommandEnvelope',
+    'VelocityCommand',
+    'VelocityCommandEnvelope',
+    'CommandGuard',
+    'CommandRejected',
+    'CommandInput',
+    'CommandMux',
+    'Arbiter',
+    'Connect',
+    'LocalPlacement',
+    'ProcessPlacement',
+    'LocalReference',
+    'SharedMemoryChannel',
+    'DDSChannel',
+    'Hipnuc',
+]
 
 
 def __getattr__(name):
-    # Geometry remains optional for applications using only sensor adapters.
-    if name in {"load_rig", "SensorRig", "Mount", "UncalibratedMount"}:
-        from . import config
-        return getattr(config, name)
-    if name == "SerialIMU":
-        from .imu import SerialIMU
-        return SerialIMU
-    if name == "PlanarOdometry":
-        from .odometry import PlanarOdometry
-        return PlanarOdometry
-    if name in {"ChassisController", "MotionError"}:
-        from .motion import ChassisController, MotionError
-        return {"ChassisController": ChassisController, "MotionError": MotionError}[name]
-    raise AttributeError(name)
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module, attribute = _EXPORTS[name]
+    value = getattr(import_module(module), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_EXPORTS))

@@ -3,7 +3,7 @@ import os
 import numpy as np
 
 from rsim import Frame
-from rsim.shared import SharedStore, decode
+from rsim.transport.shared import SharedStore, decode
 
 
 def test_readonly_mapping_survives_history_eviction_and_reuses_inode(tmp_path):

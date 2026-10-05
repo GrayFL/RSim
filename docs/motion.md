@@ -7,7 +7,7 @@
 ```python
 from graphmap.pose import Pose
 from rsim import Runtime
-from rsim.motion import ChassisController
+from rsim.components.motion import ChassisController
 
 # chassis 是配置好的 Chassis 或具有相同 imu/odom/velocity 端口的组件。
 # 必须使用设备的真实安装外参：下例仅演示坐标标签和传参形式。
@@ -49,8 +49,8 @@ async with Runtime(robot):
 `robot.odometry.estimate` 额外提供 6×6 协方差、前向速度、角速度、零偏估计和丢弃计数。独立使用或把已有定位结果接入控制器：
 
 ```python
-from rsim.odometry import PlanarOdometry
-from rsim.motion import ChassisController
+from rsim.components.odometry import PlanarOdometry
+from rsim.components.motion import ChassisController
 from rsim import ProcessPlacement
 
 localization = PlanarOdometry(chassis.odom, chassis.imu, T_body_imu=T_body_imu)

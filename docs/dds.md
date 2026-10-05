@@ -70,7 +70,7 @@ camera = D435(transport=transport)
 
 ```python
 from rsim import SharedSensor
-from rsim.synthetic import CounterArray
+from rsim.components.synthetic import CounterArray
 
 provider = SharedSensor(lambda: CounterArray(), key="counter", version="1")
 client = SharedSensor(key="counter", version="1")
@@ -97,7 +97,7 @@ topic 前缀遵循 [ROS 2 到 DDS 的命名映射](https://design.ros2.org/artic
 
 新部署的 Signal 通道使用 `/rsim/channels/p<端口实例标识>`，数据 QoS 与上表一致。CommandSink 使用 `/rsim/commands/p<端口实例标识>/request` 和 `/reply`，可靠、volatile，不保留历史命令。命令重试保留原 deadline，并在 provider 去重和校验。
 
-`Frame`、`Image`、`PointCloud` 位于独立的 `rsim.model`；公共包也重导出这些类型。历史查询、时间域和接收时刻语义不变。
+`Frame`、`Image`、`PointCloud` 位于独立的 `rsim.core.model`；公共包也重导出这些类型。历史查询、时间域和接收时刻语义不变。
 
 ## 共享内存与所有权
 

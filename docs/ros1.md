@@ -86,7 +86,7 @@ async with Runtime(sensor):
 
 ```python
 from rsim import Runtime
-from rsim.remote_ros2 import ChassisROS2
+from rsim.adapters.ros2.chassis import ChassisROS2
 
 relay = ChassisROS2(chassis, prefix="/chassis")
 async with Runtime(relay):

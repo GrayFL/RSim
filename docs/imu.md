@@ -12,7 +12,7 @@ python -m pip install -e '.[imu,config]'
 
 串口读取需要 pyserial，配置加载需要 PyYAML。Linux 通常已提供 `cp210x` 内核驱动；先检查 USB 枚举、`/dev/serial/by-id/`、设备权限及实际绑定的驱动，不应直接用旧版厂商驱动覆盖当前内核模块。没有指定 port 时，只在恰好发现一台 CP210x 时自动选择，多台设备必须明确指定。
 
-ROS2 入口源码位于 `ros2/rsim_hipnuc`，复用 Python 模块 `rsim.imu_ros`。在已加载 ROS2 的开发环境中，将该目录放入 ROS 工作空间并只构建此包：
+ROS2 入口源码位于 `ros2/rsim_hipnuc`，复用 Python 模块 `rsim.adapters.ros2.imu`。在已加载 ROS2 的开发环境中，将该目录放入 ROS 工作空间并只构建此包：
 
 ```bash
 # ROS_WORKSPACE 由调用者设置为自己的工作空间。
@@ -30,7 +30,7 @@ source install/setup.bash
 
 ```python
 from rsim import Runtime
-from rsim.imu import SerialIMU
+from rsim.adapters.hipnuc import SerialIMU
 
 imu = SerialIMU(port=serial_device, baudrate=115200)
 async with Runtime(imu):

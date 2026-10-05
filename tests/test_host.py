@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 from rsim import Runtime, SensorError, TransportConfig
-from rsim.host import SharedSensor
-from rsim.synthetic import CounterArray
+from rsim.runtime.host import SharedSensor
+from rsim.components.synthetic import CounterArray
 
 
 def test_shared_source_survives_first_owner_and_maps_one_inode():

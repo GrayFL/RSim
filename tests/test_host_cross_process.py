@@ -5,7 +5,7 @@ import sys
 import uuid
 
 from rsim import Runtime, SharedSensor
-from rsim.synthetic import CounterArray
+from rsim.components.synthetic import CounterArray
 
 
 def test_independent_client_death_does_not_stop_other_consumer(tmp_path):
@@ -16,7 +16,7 @@ def test_independent_client_death_does_not_stop_other_consumer(tmp_path):
 import asyncio,json,sys
 from pathlib import Path
 from rsim import Runtime,SharedSensor
-from rsim.synthetic import CounterArray
+from rsim.components.synthetic import CounterArray
 async def main():
     sensor=SharedSensor(lambda: CounterArray(),key=sys.argv[1])
     async with Runtime(sensor):

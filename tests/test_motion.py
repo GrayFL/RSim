@@ -9,8 +9,8 @@ pytest.importorskip("graphmap.pose")
 from graphmap.pose import Pose
 
 from rsim import Component, ComponentError, Runtime, ProcessPlacement, VelocityCommand
-from rsim.motion import ChassisController, MotionError
-from rsim.odometry import PlanarEKF, PlanarOdometry, wrap_angle
+from rsim.components.motion import ChassisController, MotionError
+from rsim.components.odometry import PlanarEKF, PlanarOdometry, wrap_angle
 from examples.chassis_motion import SimulatedChassis, odom_message, imu_message
 
 
@@ -193,8 +193,8 @@ def test_stale_pose_stops_instead_of_driving_on_cached_feedback():
 
 
 def test_pose_codec_and_ekf_process_placement(tmp_path):
-    from rsim.shared import SharedStore, decode
-    from rsim.model import Frame
+    from rsim.transport.shared import SharedStore, decode
+    from rsim.core.model import Frame
     original = Pose(x=1, y=2, yaw=120, wrd_frame="odom", ego_frame="body")
     store = SharedStore(tmp_path / "pose")
     try:

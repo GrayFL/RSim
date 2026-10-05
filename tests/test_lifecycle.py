@@ -3,7 +3,7 @@ import uuid
 import pytest
 
 from rsim import SensorError
-from rsim.lifecycle import acquire_device
+from rsim.runtime.locks import acquire_device
 
 
 def test_device_ownership_is_exclusive_until_release():

@@ -20,7 +20,7 @@ async def run(args):
     extra_roots = ()
     manual_stop = None
     if args.ros2:
-        from rsim.remote_ros2 import ChassisROS2
+        from rsim.adapters.ros2.chassis import ChassisROS2
         root = ChassisROS2(chassis, prefix=args.ros2, forward_commands=False)
         manual_stop = Component().signal("stop")
         mux = CommandMux(ros2=CommandInput(root.velocity_command, 10),

@@ -1,6 +1,6 @@
 # 原生 ROS 驱动参数
 
-`rsim.drivers.D435`、`rsim.drivers.RobinW` 和低层 `rsim.ros` 对应适配器接受 `parameters` 与 `ros_args`。参数名不设白名单：设备驱动支持的节点参数均可传入，具体名称、类型和取值范围以所安装驱动为准。
+`rsim.drivers.D435`、`rsim.drivers.RobinW` 和低层 `rsim.adapters.ros2` 对应适配器接受 `parameters` 与 `ros_args`。参数名不设白名单：设备驱动支持的节点参数均可传入，具体名称、类型和取值范围以所安装驱动为准。
 
 ## Python 调用
 
@@ -84,4 +84,4 @@ python -m rsim.drivers d435 \
 
 此入口直接启动原生节点，相当于 `ros2 run` 的节点选项，不执行厂商 launch 文件。只属于 launch 的开关（如 RealSense 的 `camera_namespace`）需用相应节点选项表达（`-r __ns:=...`）。原生参数可启用额外 ROS 输出，但不会自动增加新的 RSim 数据模型：D435 当前返回 color/depth Image，RobinW 返回 PointCloud。改变输出模式或改用厂商多设备配置文件时，应使用低层 `Driver` + `RosSensor` 显式配置订阅与组合。
 
-通用 `rsim.ros.Driver(package, executable, parameters, key=..., ros_args=..., remappings=...)` 也提供同样的参数编码与 argv 通道，适合自定义原生节点。`Camera` 当前通过 OpenCV/UVC 采集，没有原生 ROS 驱动启动参数；CLI 对其 `--ros-args` 明确报错。
+通用 `rsim.adapters.ros2.Driver(package, executable, parameters, key=..., ros_args=..., remappings=...)` 也提供同样的参数编码与 argv 通道，适合自定义原生节点。`Camera` 当前通过 OpenCV/UVC 采集，没有原生 ROS 驱动启动参数；CLI 对其 `--ros-args` 明确报错。

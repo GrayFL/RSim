@@ -4,8 +4,9 @@ import numpy as np
 import pytest
 
 from rsim import D435, Runtime, Sensor
-from rsim.devices import _ImageStream
-from rsim.ros import D435 as RosD435, Image
+from rsim.devices.realsense import _ImageStream
+from rsim.drivers.realsense import D435Source as RosD435
+from rsim.core.model import Image
 
 
 def test_d435_profiles_share_one_driver_and_match_topic_namespace():

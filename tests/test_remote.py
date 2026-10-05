@@ -12,9 +12,9 @@ import numpy as np
 import pytest
 
 from rsim import Bundle, Chassis, ProcessSensor, Ros1Bridge, Runtime, SSHConfig, SensorError
-from rsim.model import Frame
-from rsim.remote import decode_message
-from rsim.shared import SharedStore, decode
+from rsim.core.model import Frame
+from rsim.adapters.ros1 import decode_message
+from rsim.transport.shared import SharedStore, decode
 
 
 spec = importlib.util.spec_from_file_location("ros1_agent", Path(__file__).parents[1] / "compat/ros1_agent.py")
@@ -293,7 +293,7 @@ def test_ssh_configuration_uses_argv_and_quotes_remote_paths():
 def test_ros2_standard_message_adaptation_preserves_time_covariance_and_inf():
     pytest.importorskip("rclpy", exc_type=ImportError)
     from sensor_msgs.msg import LaserScan, Imu
-    from rsim.remote_ros2 import fill_ros2
+    from rsim.adapters.ros2.chassis import fill_ros2
     header = {"seq": 10, "stamp": {"secs": 123, "nsecs": 456}, "frame_id": "laser"}
     scan = fill_ros2(LaserScan(), {"header": header, "ranges": np.array([1., np.inf], dtype="f4")})
     assert scan.header.stamp.sec == 123 and scan.header.stamp.nanosec == 456
@@ -304,7 +304,7 @@ def test_ros2_standard_message_adaptation_preserves_time_covariance_and_inf():
 
 def test_ros2_mirror_runtime_opens_and_processes_topics(endpoint):
     pytest.importorskip("rclpy", exc_type=ImportError)
-    from rsim.remote_ros2 import ChassisROS2
+    from rsim.adapters.ros2.chassis import ChassisROS2
 
     async def run():
         chassis = Chassis(endpoint)

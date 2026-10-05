@@ -4,7 +4,7 @@ RSim 是机器人底层适配与组合计算原型。`Component` 管生命周期
 
 ```python
 from rsim import Runtime, Map, ProcessPlacement
-from rsim.synthetic import CounterArray
+from rsim.components.synthetic import CounterArray
 
 source = CounterArray(size=1024)
 squared = Map(source.output, lambda values: values ** 2)
@@ -60,7 +60,7 @@ class Analysis(Component):
 - `Bundle` 取各路 latest snapshot；`Synchronizer` 围绕参考时间 join，跨时钟必须配置 `ClockTransform`，插值需显式提供函数。
 - task / service 由 Metronome 控速，每个 Component 有 WatchDog；同一循环的阻塞计算应放入独立 ProcessPlacement。
 
-完整语义、迁移与限制见 [架构文档](docs/architecture.md)。
+完整语义、迁移与限制见 [架构文档](docs/architecture.md)。源码职责、依赖方向、新增设备与内部导入迁移见 [包结构与扩展](docs/modules.md)。
 
 ## 硬件入口
 

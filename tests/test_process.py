@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 
 from rsim import Runtime, SensorError
-from rsim.compose import Map
-from rsim.process import ProcessSensor
-from rsim.synthetic import CounterArray
+from rsim.core.compose import Map
+from rsim.runtime.process import ProcessSensor
+from rsim.components.synthetic import CounterArray
 
 
 def nested_factory():

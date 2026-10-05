@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from rsim.imu_ros import main
+from rsim.adapters.ros2.imu import main
 
 if __name__ == "__main__":
     main()

@@ -71,7 +71,7 @@ def test_same_graph_multioutput_process_and_fanout_share_one_producer():
 def test_internal_component_boundaries_do_not_materialize_arrays():
     class Pipeline(Component):
         def __init__(self):
-            from rsim.synthetic import CounterArray
+            from rsim.components.synthetic import CounterArray
             raw = CounterArray()
             transformed = Map(raw.output, lambda array: {"already_shared": isinstance(array, np.memmap),
                                                         "values": array})
@@ -116,7 +116,7 @@ def test_process_local_resource_follows_each_owner_without_duplicating_a_source(
 
 def test_closed_process_adapter_can_move_to_another_placement():
     from rsim import ProcessSensor
-    from rsim.synthetic import CounterArray
+    from rsim.components.synthetic import CounterArray
     async def run():
         source = ProcessSensor(lambda: CounterArray())
         async with Runtime(source.output):

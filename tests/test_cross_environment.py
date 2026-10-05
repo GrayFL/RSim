@@ -36,7 +36,7 @@ from importlib.abc import MetaPathFinder
 sys.path[:] = [p for p in sys.path if '/opt/ros/' not in p]
 class NoROS(MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in ('rclpy', 'std_msgs', 'sensor_msgs', 'ament_index_python') or fullname == 'rsim.ros':
+        if fullname.split('.')[0] in ('rclpy', 'std_msgs', 'sensor_msgs', 'ament_index_python') or fullname == 'rsim.adapters.ros2':
             raise AssertionError('ROS import attempted in client: ' + fullname)
 sys.meta_path.insert(0, NoROS())
 '''
@@ -62,7 +62,7 @@ def mapped_inode(array):
     raise AssertionError('array has no memory mapping')
 def verify(frame):
     data=frame.data
-    assert type(frame).__module__ == 'rsim.model'
+    assert type(frame).__module__ == 'rsim.core.model'
     assert isinstance(data['image'], Image) and isinstance(data['cloud'], PointCloud)
     for name,attr,inode in [('image','pixels','image_inode'),('cloud','points','points_inode')]:
         array=getattr(data[name],attr)
@@ -91,7 +91,7 @@ async def main():
         worker=direct.worker_pid
         compute=nested.worker_pid
     assert int(retained.sum())==checksum
-    assert not any(n.split('.')[0] in ('rclpy','std_msgs','sensor_msgs') or n=='rsim.ros' for n in sys.modules)
+    assert not any(n.split('.')[0] in ('rclpy','std_msgs','sensor_msgs') or n=='rsim.adapters.ros2' for n in sys.modules)
     Path(result).write_text(json.dumps({'python':sys.version,'source_pid':worker,'compute_pid':compute,
         'native_dds':True,'ros_imports':False,'shared_inodes':True,'history':True,'survived_provider_exit':True}))
 asyncio.run(main())

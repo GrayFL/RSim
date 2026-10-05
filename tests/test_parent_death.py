@@ -37,8 +37,8 @@ def test_parent_sigkill_reaps_nested_workers_and_stores(tmp_path):
 import asyncio, json, sys
 from pathlib import Path
 from rsim import Runtime
-from rsim.process import ProcessSensor
-from rsim.synthetic import CounterArray
+from rsim.runtime.process import ProcessSensor
+from rsim.components.synthetic import CounterArray
 async def main():
     sensor = ProcessSensor(lambda: ProcessSensor(lambda: CounterArray()))
     async with Runtime(sensor):
@@ -62,8 +62,8 @@ asyncio.run(main())
                     args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
                 except FileNotFoundError:
                     continue
-                if b"rsim._supervisor" in args:
-                    stores.append(Path(os.fsdecode(args[args.index(b"rsim._supervisor") + 1])))
+                if b"rsim.runtime.supervisor" in args:
+                    stores.append(Path(os.fsdecode(args[args.index(b"rsim.runtime.supervisor") + 1])))
             assert len(stores) == 2
             process.kill()
             await process.wait()
@@ -87,7 +87,7 @@ def test_parent_sigkill_reclaims_placement_workers_and_local_export_store(tmp_pa
 import asyncio, json, sys
 from pathlib import Path
 from rsim import Runtime, Map, ProcessPlacement
-from rsim.synthetic import CounterArray
+from rsim.components.synthetic import CounterArray
 async def main():
     source = CounterArray()
     first, second = Map(source, lambda x: x), Map(source, lambda x: x)

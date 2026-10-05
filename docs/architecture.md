@@ -1,5 +1,7 @@
 # Component / Signal 架构
 
+代码按 `core`、`runtime`、`transport`、`adapters`、`devices`、`drivers`、`components` 和 `config` 分包。模块职责、依赖方向、扩展方式及导入迁移见 [包结构与扩展](modules.md)；本文描述运行时模型和数据语义。
+
 ## 两张独立的图
 
 `Component` 是生命周期和计算单位，`Signal[T]` 是由组件产生的时间序列。Signal 没有 open/close、WatchDog 或自己的进程。Component 可以有零个、一个或多个输出；数据存储和 `get()` 不再放进通用 Component。

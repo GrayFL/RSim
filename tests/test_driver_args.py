@@ -6,9 +6,10 @@ import sys
 import pytest
 
 from rsim import D435 as ClientD435, Runtime, SensorError
-from rsim._ros_args import RosArguments
-from rsim.drivers import D435, RobinW, _parse_args, _sensor_from_args
-from rsim.ros import Driver
+from rsim.adapters.ros2.arguments import RosArguments
+from rsim.drivers import D435, RobinW
+from rsim.drivers.cli import _parse_args, _sensor_from_args
+from rsim.adapters.ros2 import Driver
 
 
 def require_ros():
@@ -157,7 +158,7 @@ finally:
 
 def test_disabled_client_stream_reports_error_without_waiting_forever():
     from rsim.core import Sensor
-    from rsim.devices import _ImageStream
+    from rsim.devices.realsense import _ImageStream
 
     async def run():
         source = Sensor()

@@ -8,7 +8,7 @@ import time
 import numpy as np
 
 from rsim import Runtime, ProcessPlacement, allocate
-from rsim.compose import Map
+from rsim.core.compose import Map
 from rsim.drivers import RobinW
 
 

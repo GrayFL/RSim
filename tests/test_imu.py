@@ -11,7 +11,7 @@ pytest.importorskip("serial")
 pytest.importorskip("graphmap.pose")
 
 from rsim import ComponentError, Runtime
-from rsim.imu import HipnucDecoder, SerialIMU, imu_message
+from rsim.adapters.hipnuc import HipnucDecoder, SerialIMU, imu_message
 
 
 def packet(payload):

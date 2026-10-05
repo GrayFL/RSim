@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-from rsim.ros import image_array, pointcloud_array
+from rsim.adapters.ros2 import image_array, pointcloud_array
 
 
 def test_pointcloud_padding_and_endianness_are_preserved():

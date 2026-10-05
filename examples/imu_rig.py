@@ -9,7 +9,7 @@ import numpy as np
 
 from rsim import Runtime
 from rsim.config import load_rig
-from rsim.model import Image, PointCloud
+from rsim.core.model import Image, PointCloud
 
 
 async def capture(signal, count, timeout):
