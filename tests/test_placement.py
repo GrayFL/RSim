@@ -8,6 +8,7 @@ import pytest
 
 from rsim import Component, Runtime, Map, ProcessPlacement, LocalPlacement
 from rsim import CommandSink, VelocityCommand, Connect, CommandEnvelope, CommandRejected
+from rsim import PortNotBound
 
 
 class MultiOutput(Component):
@@ -40,11 +41,32 @@ class MultiOutput(Component):
                                 stamp_ns=stamp, clock="test")
 
 
+def test_demand_is_exact_and_dependency_only_placement_has_no_exporter():
+    async def run():
+        source = MultiOutput()
+        wrapper = Component()
+        wrapper.expose('pose', source.info)
+        # The wrapper has one public alias; arrays remain private to source.
+        async with Runtime(wrapper, placement={wrapper: ProcessPlacement('wrapped')}) as runtime:
+            info = await wrapper.pose.get(timeout=10)
+            assert info.sample_id.canonical_port_id == 'info'
+            assert len(runtime._binding_plan.channels) == 1
+            assert not list(runtime._binding_plan.directory.rglob('*.npy'))
+            with pytest.raises(PortNotBound):
+                await source.array.get(timeout=1)
+        lifetime = Component(source)
+        async with Runtime(lifetime, placement={source: ProcessPlacement('resource')}) as runtime:
+            assert runtime._binding_plan.channels == {}
+            with pytest.raises(PortNotBound):
+                await source.info.get(timeout=1)
+    asyncio.run(run())
+
+
 def test_same_graph_multioutput_process_and_fanout_share_one_producer():
     async def run():
         source = MultiOutput()
         left, right = Map(source.array, lambda array: array), Map(source.array, lambda array: array)
-        runtime = Runtime(left.output, right.output, source.info,
+        runtime = Runtime(left.output, right.output, source.info, source.mirror,
                           placement={source: ProcessPlacement("compute")})
         previous_info = 0
         for _ in range(2):
@@ -172,7 +194,7 @@ class Actuator(Component):
 def test_command_sink_in_worker_validates_and_stops_at_provider():
     async def run():
         device = Actuator()
-        async with Runtime(device, placement={device: ProcessPlacement("device")}):
+        async with Runtime(device, device.velocity, placement={device: ProcessPlacement("device")}):
             initial = await device.feedback.get(timeout=15)
             assert initial.data["pid"] != os.getpid()
             await device.velocity.set(VelocityCommand(1), ttl=.15)
@@ -213,7 +235,7 @@ def test_local_input_to_two_process_consumers_materializes_once():
         source = Component()
         array = source.signal("array", clock="test")
         left, right = MultiOutput(array), MultiOutput(array)
-        async with Runtime(left.info, right.info, placement={
+        async with Runtime(left.info, right.info, left.array, placement={
                 left: ProcessPlacement("left"), right: ProcessPlacement("right"), source: LocalPlacement()}):
             frame = await array.publish(np.arange(100, dtype="f8"), stamp_ns=1, clock="test")
             a, b = await asyncio.gather(left.info.get(timeout=15), right.info.get(timeout=15))

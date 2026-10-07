@@ -30,9 +30,9 @@ flowchart LR
 
 | 类型 | 责任 | 接口 |
 | --- | --- | --- |
-| Component | 所有权、任务、失败、放置位置 | dependencies / inputs / open / close / task / service / wait |
+| Component | 所有权、任务、失败、放置位置 | dependencies / inputs / open / close / task / service / wait / expose |
 | Signal[T] | producer、历史、时间查询、广播等待 | publish / get / frames |
-| Frame[T] | 数据及其时间元信息 | data / stamp_ns / clock / received_ns / sequence |
+| Frame[T] | 数据及其时间元信息 | data / stamp_ns / clock / received_ns / sequence / sample_id / metadata |
 | PrimaryComponent | 明确的单输出便捷接口 | output / primary / get / publish |
 | CommandSink[T] | provider 所有的写端口 | set |
 | Runtime | 解析两张图并绑定部署位置 | async with / wait |
@@ -40,6 +40,8 @@ flowchart LR
 `Frame` 不可变，但 payload 的不可变性是发布协议：发布后不得再修改数据或保留写别名。同进程不自动复制数组，也不自动设置数组 writeable 标记。跨进程读者得到只读 OS 映射。
 
 `Signal.get()` 读取最新帧；`after` 是当前端口的本地观察游标。跨边界会生成本地 sequence，不能用两个端口的 sequence 相等推断同一次物理采样。时间查询要求显式 clock，使用最近邻容差，历史外抛出 `HistoryMiss`。`received_ns` 是 Unix 接收/产生时间，会随派生组件是否显式继承而不同；它不证明设备时钟同步。
+
+`SampleId` 区分 producer 实例、canonical port 与该实例的发布序号；新边界协议保持该身份，Frame.sequence 仍是本地游标。重新打开 producer 创建新实例；动态导出保留样本不修改原 Frame，也不增加源发布次数。`metadata` 可携带业务版本关联信息。
 
 多输出组件（底盘、SLAM、Navigation）直接暴露命名 Signals，不提供模糊的聚合 get。只有明确 primary output 的组件提供 get 快捷调用。自定义算法可以保持内部变量，只将需观察、复用或传输的结果声明为 Signal。
 
@@ -99,9 +101,11 @@ async with Runtime(analysis.pose, drive, placement={
 | 同 host 跨进程 | DDSChannel / SharedMemoryChannel | DDS 描述信息 + SharedStore / mmap |
 | 跨主机 ROS1 adapter | SSH topic 协议 | 序列化消息内容，主机解码 |
 
+部署计划分别计算 ActiveComponents 与 DemandedPorts。Signal 根只请求自身，Component 根展开公开输出，inputs 精确请求输入端口；资源 dependencies 与显式 placement 不增加需求。CommandSink 根和 command targets 显式请求写端口。未绑定远端端口抛 `PortNotBound`，本地已启动的其他输出仍可读取。`Component.expose()` 建立公开别名并沿用真实 producer，不轮询或复制历史。
+
 部署计划只在需要跨边界的输出安装 materialization。内部 Component/Signal 不自动产生共享文件；多输出组件仍只计算一次。一个共享 allocator 复用同一普通数组的首次发布，多个读者映射相同 inode，原路径仍存在的完整只读 memmap 转发使用硬链接。明确需要直接共享分配时可以使用 `allocate()`；现有工厂式 ProcessSensor 为其安装 worker store，普通本地分配保持 NumPy 数组。
 
-Signal payload 支持标量、字典/列表/元组、NumPy 数组、Image、PointCloud，以及封闭 schema 的 Frame、CommandEnvelope、VelocityCommand。安装可选 graphmap 依赖后，也支持以平移、四元数、尺度和坐标标签编码的 Pose，见 [位姿融合与底盘控制](motion.md)。任意 Python 对象可在本地传递，但不能未经适配直接跨该通道；描述信息不反序列化任意 Python 类。工厂/部署代码只通过 cloudpickle 在同一应用解释器内启动；不同 Python 版本应用通过 SharedSensor 连接 provider，不交换工厂。
+Signal payload 支持标量、字典/列表/元组、NumPy 数组、Image、PointCloud，以及封闭 schema 的 Frame、SampleId、CommandEnvelope、VelocityCommand。安装可选 graphmap 依赖后，也支持以平移、四元数、尺度和坐标标签编码的 Pose，见 [位姿融合与底盘控制](motion.md)。任意 Python 对象可在本地传递，但不能未经适配直接跨该通道；描述信息不反序列化任意 Python 类。工厂/部署代码只通过 cloudpickle 在同一应用解释器内启动；不同 Python 版本应用通过 SharedComponent（或旧单输出 SharedSensor）连接 provider，不交换工厂。
 
 跨进程 CommandSink 使用可靠、volatile 的请求/应答 topic。请求有去重 ID，payload 中的 envelope 在最终 provider 再次校验；通道先通过无执行副作用的握手确认发现；发现或应答延迟超过 deadline 的命令按过期丢弃，下一条新命令仍可继续，重试不改变 deadline。只导出端口，普通组件属性、设备句柄和 service 不变成远程 RPC。部署到其他进程后应只通过公开 Signals / CommandSinks 交互。
 
@@ -125,3 +129,5 @@ DDS 只序列化 JSON 描述信息，数组不经过 DDS payload 序列化；ROS
 - ROS1 兼容协议升级为 v2，主机与远端脚本必须一起更新；v1 缺少 deadline/epoch 校验会被拒绝握手。
 
 可运行的多输出、同图两种部署和模拟控制见 [components.py](../examples/components/components.py) 与 [Notebook](../examples/components/components.ipynb)。原需求说明保留在 [重构文档](重构文档.md)。
+
+多环境多端口协议、按需端点与租约的使用方法见 [多端口共享](shared-components.md)；设计依据保留在 [重构文档 v2](重构文档v2.md)。

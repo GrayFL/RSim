@@ -36,6 +36,10 @@ flowchart LR
 | `await mapper.status.get()` | 接入计数、时间偏移、输入年龄、配对误差、关键帧/回环计数、地图版本及配置假设 |
 | `await mapper.save(path, frame=None)` | 导出最新或指定 `rgb_map` Frame 为 binary little-endian `.ply`；仅含 XYZ/RGB，不保留完整索引 |
 
+这五个端口由原生 MappingOutput 独立发布；提供者不再合成共享 snapshot，客户端也不再轮询拆包。`Runtime(mapper.pose)` 不导出 map/rgb_map；`Runtime(mapper)` 明确请求全部公开输出。`save()` 在客户端读取已绑定的 rgb_map 后本地导出，需把 rgb_map 加入 Runtime 根。`serve_shared(provider)` 可以只保持提供者生命周期，等待客户端按需订阅。
+
+`map` 的 payload 是原子的 `(session_id, revision)` 快照；map/rgb_map 的 `Frame.metadata` 带同一对版本字段，pose 的 metadata 标识其全局修正使用的地图版本。分次 get 可能跨版本，需要一致数据的调用方应比较版本并在保留历史内匹配。`sample_id` 标识端口发布，`(session_id, source_id)` 标识激光观测，两者用途不同。
+
 端口均支持 `get(after=frame.sequence)` 和 `get(timestamp_ns=..., clock=...)`；历史由 `history` 限定。默认只保留少量帧，历史查询应在保留窗口内完成。没有默认的 `mapper.get()`。
 
 ```python
@@ -60,7 +64,7 @@ from rsim import Runtime
 from rsim.devices import Mapper
 
 mapper = Mapper("mapping")
-async with Runtime(mapper):
+async with Runtime(mapper.pose, mapper.rgb_map):
     pose = (await mapper.pose.get(timeout=60)).data
     points = (await mapper.rgb_map.get(timeout=30)).data.points
 ```

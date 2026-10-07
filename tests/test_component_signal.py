@@ -126,3 +126,24 @@ def test_hard_dependencies_win_over_cyclic_data_startup_preferences():
         async with Runtime(resource):
             assert opened == [resource, owner]
     asyncio.run(run())
+
+
+def test_public_alias_preserves_frame_but_reopen_changes_publication_generation():
+    async def run():
+        source = Outputs()
+        wrapper = Component()
+        port = wrapper.expose('public', source.image)
+        identity = None
+        for _ in range(2):
+            async with Runtime(port):
+                frame = await source.image.publish(np.arange(3), stamp_ns=10, clock='test')
+                assert await port.get() is frame
+                assert frame.sample_id != identity
+                assert frame.sample_id.publication_sequence == 1
+                assert frame.sample_id.canonical_port_id == 'image'
+                identity = frame.sample_id
+                pending = asyncio.create_task(port.get(after=frame.sequence))
+                await asyncio.sleep(0)
+            with pytest.raises(ComponentError):
+                await pending
+    asyncio.run(run())

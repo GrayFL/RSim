@@ -15,6 +15,7 @@ import cloudpickle
 
 from rsim.core.component import PrimaryComponent, ComponentError
 from rsim.transport.shared import decode
+from .port_binding import sample_id
 from rsim.transport.descriptor import DescriptorTransport, transport_config
 
 
@@ -82,7 +83,9 @@ class ProcessSensor(PrimaryComponent):
             return
         self._remote_sequence = descriptor["sequence"]
         await self.publish(data, stamp_ns=descriptor["stamp_ns"], clock=descriptor["clock"],
-                           received_ns=descriptor["received_ns"])
+                           received_ns=descriptor["received_ns"],
+                           sample_id=sample_id(descriptor),
+                           metadata=decode(descriptor["metadata"], self.directory / "frames") if "metadata" in descriptor else {})
 
     async def close(self):
         import shutil

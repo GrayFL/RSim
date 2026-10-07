@@ -14,7 +14,7 @@ import shutil
 import uuid
 import weakref
 import sys
-from dataclasses import fields, replace
+from dataclasses import asdict, fields, replace
 
 import numpy as np
 
@@ -24,9 +24,9 @@ current_store = ContextVar("rsim_shared_store", default=None)
 
 def _records():
     # Closed schema: a descriptor cannot import or instantiate arbitrary code.
-    from rsim.core.model import Frame
+    from rsim.core.model import Frame, SampleId
     from rsim.core.commands import CommandEnvelope, VelocityCommand
-    return {cls.__name__: cls for cls in (Frame, CommandEnvelope, VelocityCommand)}
+    return {cls.__name__: cls for cls in (Frame, SampleId, CommandEnvelope, VelocityCommand)}
 
 
 def _is_pose(data):
@@ -104,6 +104,7 @@ class SharedStore:
         directory.mkdir(mode=0o700)
         try:
             descriptor = self._encode(frame.data, directory)
+            metadata = self._encode(frame.metadata, directory)
         except BaseException:
             shutil.rmtree(directory)
             raise
@@ -111,7 +112,8 @@ class SharedStore:
         while len(self._committed) > self.history:
             shutil.rmtree(self._committed.popleft())
         return {"data": descriptor, "stamp_ns": frame.stamp_ns, "clock": frame.clock,
-                "received_ns": frame.received_ns, "sequence": frame.sequence}
+                "received_ns": frame.received_ns, "sequence": frame.sequence,
+                "sample_id": asdict(frame.sample_id) if frame.sample_id else None, "metadata": metadata}
 
     def allocate(self, shape, dtype):
         if np.dtype(dtype).hasobject:
@@ -197,7 +199,9 @@ def decode(data, allowed_directory):
     if kind == "dict":
         return {k: decode(v, allowed_directory) for k, v in data["items"].items()}
     if kind == "record":
-        record = _records()[data["name"]]
+        record = _records().get(data["name"])
+        if record is None:
+            raise ValueError("unknown shared record schema")
         return record(**{key: decode(value, allowed_directory) for key, value in data["fields"].items()})
     if kind in ("tuple", "list"):
         values = [decode(v, allowed_directory) for v in data["items"]]

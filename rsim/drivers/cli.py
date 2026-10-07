@@ -6,6 +6,9 @@ from . import D435, RobinW, Camera, Hipnuc, STM32
 async def serve(sensor):
     """Hold a provider lease until cancelled; suitable for create_task in notebooks."""
     from rsim.runtime.graph import Runtime
+    from rsim.runtime.sharing import SharedProvider, serve_shared
+    if isinstance(sensor, SharedProvider):
+        return await serve_shared(sensor)
     async with Runtime(sensor):
         frame = await sensor.get(timeout=30)
         while True:

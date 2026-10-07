@@ -5,7 +5,7 @@ import time
 import numpy as np
 from graphmap.pose import Pose
 
-from rsim.core import PrimaryComponent, Frame
+from rsim.core import Component
 from .mapping_input import pose_transform
 
 
@@ -44,9 +44,12 @@ def rgb_points(points, *, allocator=np.empty):
     return result
 
 
-class MappingOutput(PrimaryComponent):
+class MappingOutput(Component):
     def __init__(self, inputs, *drivers, frames, T_base_imu, database, assumptions, allocator=np.empty, mapping=None):
-        super().__init__(inputs, *drivers, history=3)
+        super().__init__(inputs, *drivers)
+        for name in ("pose", "odometry", "map", "rgb_map", "status"):
+            setattr(self, name, self.signal(name, history=3, clock="ros:system"))
+        self.correction_revision = {}
         self.ingress, self.ros, self.prefix = inputs, inputs.ros, inputs.prefix
         self.frames, self.T_base_imu = frames, T_base_imu
         self.database, self.assumptions = database, assumptions
@@ -58,7 +61,6 @@ class MappingOutput(PrimaryComponent):
         self.correction = None
         self.latest = {}
         self.subscriptions = []
-        self.sequence = dict.fromkeys(('odometry', 'pose', 'rgb_map', 'map', 'status'), 0)
         self.last_odom = None
         self.last_correction = None
         self.last_corrected_odometry = None
@@ -80,7 +82,7 @@ class MappingOutput(PrimaryComponent):
         self.task('native-output', self.convert, hz=100)
         # Native TF follows IMU updates; shared snapshots have their own rate.
         # Avoid serializing diagnostics and descriptors at every IMU tick.
-        self.task('mapping-snapshot', self.status, hz=20)
+        self.task('mapping-status', self.emit_status, hz=20)
         if self.mapping is not None:
             await self.mapping.open(self)
 
@@ -106,9 +108,10 @@ class MappingOutput(PrimaryComponent):
                 self.correction = Pose(translation=[t.x, t.y, t.z], rotation=[q.x, q.y, q.z, q.w],
                     wrd_frame=self.frames['map'], ego_frame=self.frames['odom'])
 
-    def frame(self, name, data, stamp_ns):
-        self.sequence[name] += 1
-        return Frame(data, stamp_ns, 'ros:system', sequence=self.sequence[name])
+    async def publish_port(self, name, data, stamp_ns, *, metadata=None):
+        frame = await self.outputs[name].publish(data, stamp_ns=stamp_ns, clock='ros:system', metadata=metadata)
+        self.latest[name] = frame
+        return frame
 
     async def convert(self):
         from nav_msgs.msg import Odometry
@@ -135,24 +138,24 @@ class MappingOutput(PrimaryComponent):
             # Upstream publishes no covariance. This is a configured weight,
             # not an uncertainty estimate returned by its filter.
             odom.pose.covariance = np.diag([.01, .01, .01, .005, .005, .005]).ravel().tolist()
-            self.publish_odometry(odom, pose)
+            await self.publish_odometry(odom, pose)
         if self.fusion is not None and self.fusion.latest is not None:
             odom = self.fusion.latest
             stamp = odom.header.stamp.sec*10**9 + odom.header.stamp.nanosec
             if self.last_odom is None or stamp > self.last_odom:
                 pose = pose_from_ros(odom.pose.pose, self.frames['odom'], self.frames['base'])
-                self.publish_odometry(odom, pose)
+                await self.publish_odometry(odom, pose)
 
-    def publish_odometry(self, odom, pose):
+    async def publish_odometry(self, odom, pose):
         stamp = odom.header.stamp.sec*10**9 + odom.header.stamp.nanosec
         self.last_odom, self.last_odom_progress = stamp, time.monotonic()
         self.broadcaster.sendTransform(pose_transform(pose, odom.header.stamp))
         self.odom_publisher.publish(odom)
-        self.latest['odometry'] = self.frame('odometry', pose, stamp)
+        await self.publish_port('odometry', pose, stamp)
         if self.correction is not None and 'rgb_map' in self.latest:
-            self.latest['pose'] = self.frame('pose', self.correction * pose, stamp)
+            await self.publish_port('pose', self.correction * pose, stamp, metadata=self.correction_revision)
 
-    async def status(self):
+    async def emit_status(self):
         stamp = time.time_ns()
         state = self.ingress.diagnostics()
         if self.scan_odometry is not None:
@@ -169,8 +172,7 @@ class MappingOutput(PrimaryComponent):
                      corrected_odometry_age_s=(stamp - self.last_corrected_odometry) * 1e-9 if self.last_corrected_odometry is not None else None,
                      rgb_map_age_s=(stamp - self.latest['rgb_map'].stamp_ns) * 1e-9 if 'rgb_map' in self.latest else None,
                      map_points=len(self.latest['rgb_map'].data.points) if 'rgb_map' in self.latest else 0)
-        self.latest['status'] = self.frame('status', state, stamp)
-        await self.publish(dict(self.latest), stamp_ns=stamp, clock='ros:system')
+        await self.publish_port('status', state, stamp)
         if self.last_odom_progress is not None and time.monotonic()-self.last_odom_progress > 5:
             raise RuntimeError('mapping odometry stopped progressing')
         if self.last_correction_progress is not None and time.monotonic()-self.last_correction_progress > 5:

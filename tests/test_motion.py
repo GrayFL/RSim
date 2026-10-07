@@ -248,7 +248,8 @@ def test_pose_codec_and_ekf_process_placement(tmp_path):
     async def run():
         chassis = SimulatedChassis(noise=False)
         control = ChassisController(chassis)
-        async with Runtime(control, placement={control.odometry: ProcessPlacement("ekf")}):
+        async with Runtime(control, control.odometry.estimate,
+                           placement={control.odometry: ProcessPlacement("ekf")}):
             frame = await control.pose.get(timeout=15)
             assert isinstance(frame.data, Pose)
             estimate = await control.odometry.estimate.get(timeout=2)

@@ -65,7 +65,7 @@ async def capture(config, *, seconds=15, output=None):
                 child=pose.data.ego_frame
                 ),
             status=(await mapper.status.get()).data,
-            worker_pid=mapper.source.worker_pid,
+            worker_pid=mapper.manifest['pid'],
             readonly=not cloud.data.points.flags.writeable,
             mmap=isinstance(cloud.data.points, np.memmap),
             history_lookup=True,

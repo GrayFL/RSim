@@ -87,7 +87,7 @@ from rsim.adapters.ros2 import Driver, RosSensor
 ## 新增传感器与算法
 
 1. 已有 ROS2 消息类型可直接组合 `RosSensor` 与 `Driver`。需要新协议时，在 `adapters` 添加协议适配，把结果转换为现有数据类型或明确的普通数据 schema。复杂协议出现多个文件时再升级为子包。
-2. 在 `devices/<设备系列>.py` 定义应用侧视图、共享 key 和版本约定；在 `drivers/<设备系列>.py` 实现 provider 工厂，复用 `SharedSensor`、适配器和物理锁。可选第三方依赖在使用时加载。
+2. 在 `devices/<设备系列>.py` 定义应用侧视图、共享 key 和版本约定；在 `drivers/<设备系列>.py` 实现 provider 工厂，多输出复用 `SharedProvider` / `SharedComponent`，单输出可沿用 legacy `SharedSensor`，并组合适配器和物理锁。可选第三方依赖在使用时加载。
 3. 算法放在 `components`，输入使用 Signal，输出和命令显式声明；计算位置由调用方通过 Runtime placement 决定。纯组合无需再创建一种传感器基类。
 4. YAML 组装可用 `load_rig(..., factories={"name": factory})` 注入项目自有工厂；内置设备在 `config.loader` 的显式表中登记。外参属于 `config.geometry`，嵌套复用属于 `config.assembly`。
 
@@ -116,7 +116,7 @@ from rsim.adapters.ros2 import Driver, RosSensor
 | `rsim._device_config` / `_driver_config` | `rsim.devices.realsense` / 对应 `rsim.drivers` 设备模块 |
 | `rsim._worker` 等进程入口 | `rsim.runtime.worker` 等同名模块 |
 
-ROS2 IMU 包的 `serial_node` 已指向新适配器入口；已有构建使用文件复制安装时，需重新安装该包的脚本。升级时先退出旧 Runtime / provider，再从新代码重建图；旧 cloudpickle 工厂包含模块路径，不作为持久化兼容格式。DDS 描述信息、共享源身份和外部数据接口保持原有协议。
+ROS2 IMU 包的 `serial_node` 已指向新适配器入口；已有构建使用文件复制安装时，需重新安装该包的脚本。升级时先退出旧 Runtime / provider，再从新代码重建图；旧 cloudpickle 工厂包含模块路径，不作为持久化兼容格式。单输出 legacy 协议保持兼容；多输出共享协议 v2 见 [多端口共享](shared-components.md)，旧 mapping snapshot 客户端需随 provider 一起升级。
 
 ## 设计依据与验证
 
@@ -127,3 +127,5 @@ ROS2 IMU 包的 `serial_node` 已指向新适配器入口；已有构建使用�
 ## 应用组装入口
 
 `rsim.apps` 组织 CLI 与 Notebook 的运行流程，可以组合 config、drivers、devices、adapters、components 和 runtime。它不作为底层模块的依赖。键盘来源在 adapters，车辆模拟与控制算法在 components，DDS 请求调度在 runtime；示例只调用这些公共实现。底盘远程入口见 [控制文档](control.md)。
+
+`runtime/port_binding.py` 提供两种进程生命周期共同使用的端口端点；`registry.py` 处理有限 JSON 租约协议，`sharing.py` 区分客户端与显式 launcher，`routing.py` 将订阅路由到真实 placement，`provider_supervisor.py` 独立监视源租约。

@@ -113,7 +113,9 @@ async with Runtime(drive):
 
 `ProcessPlacement("name")` 将对应组件放入命名 worker；同名组件共用事件循环，多输出无需启动多个 worker。未显式指定位置的 ownership 依赖跟随拥有者，Signal 输入保持自己的位置。跨位置只导出声明的 Signal / CommandSink，普通对象属性和本地 service 不变成远程调用。
 
-`SharedSensor(factory, key=..., version=...)` 保留机器级共享源和租约；省略 factory 时仅连接。相同 key 的创建者须匹配配置，其他客户端离开不会停止仍有租约的硬件。旧 `ProcessSensor(factory)` 保留为单输出兼容入口，工厂内仍可嵌套进程。
+`SharedProvider(component, key=...)` 显式启动多端口提供者；`SharedComponent(key=..., ports=...)` 只连接。`Runtime(mapper.pose)` 只请求 pose，Component 根展开全部公开输出，dependencies 和 placement 不增加输出需求；未请求的远端端口抛 `PortNotBound`。源租约、端口订阅与命令控制权分开管理，见 [多端口共享](docs/shared-components.md)。
+
+`SharedSensor(factory, key=..., version=...)` 保留单输出兼容适配器和租约；省略 factory 时仅连接。相同 key 的创建者须匹配配置，其他客户端离开不会停止仍有租约的硬件。旧 `ProcessSensor(factory)` 保留为单输出兼容入口，工厂内仍可嵌套进程。
 
 同机通道使用 DDS 描述信息 + tmpfs 只读 mmap，普通数组首次跨边界需要一次 materialization，后续消费者共享 inode。完整的只读 memmap 转发可复用 inode；它不是 ROS 驱动全链路零拷贝，也不是中间件原生 loan。发布后不得修改 payload；已读取的映射在历史淘汰或 Runtime 退出后仍可读。
 

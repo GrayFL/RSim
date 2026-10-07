@@ -1,7 +1,9 @@
 """Resolve component graphs and own their lifecycle."""
 import asyncio
+import uuid
 from rsim.core.component import Component, Reference
 from rsim.core.errors import ComponentError
+from rsim.core.signal import Signal
 
 class Runtime:
     """Own Components required by requested Components, Signals or sinks.
@@ -9,7 +11,7 @@ class Runtime:
     Ownership DAGs determine lifetime order. Signal producers are discovered
     independently, so data feedback does not create an ownership cycle.
     """
-    def __init__(self, *roots, placement=None):
+    def __init__(self, *roots, placement=None, _root_ports=True):
         self.roots = self._original_roots = roots
         self.placement = placement or {}
         self._order, self._started, self._aliases = [], [], []
@@ -17,6 +19,8 @@ class Runtime:
         self._active = False
         self._binding_plan = None
         self._command_claims = {}
+        self._root_ports = _root_ports
+        self.demanded_ports = {}
 
     def _release_bindings(self):
         for alias in self._aliases:
@@ -60,7 +64,8 @@ class Runtime:
             components[component] = None
             self._original_dependencies.setdefault(component, component.dependencies)
             component.dependencies = tuple(visit(child) for child in component.dependencies)
-            data_edges[component] = tuple(visit(signal.producer) for signal in component.inputs)
+            data_edges[component] = tuple(visit(port.producer) for port in
+                                          component.inputs + component.command_targets)
             return component
 
         root_components = []
@@ -121,6 +126,23 @@ class Runtime:
                     raise ValueError("multiple command writers require an explicit CommandMux")
                 self._command_claims[sink] = component
 
+        # Destination is a logical consumer, or None for the calling process.
+        # Ownership edges activate resources but never request their outputs.
+        self.demanded_ports = {}
+        def demand(port, destination):
+            self.demanded_ports.setdefault(port._resolved(), set()).add(destination)
+        if self._root_ports:
+            for root in self.roots:
+                if isinstance(root, Component):
+                    owner = root._binding or root._canonical or root
+                    for output in owner.outputs.values():
+                        demand(output, None)
+                else:
+                    demand(root, None)
+        for component in self._order:
+            for port in component.inputs + component.command_targets:
+                demand(port, component)
+
     async def __aenter__(self):
         if self._active:
             raise ComponentError("runtime already active")
@@ -146,10 +168,13 @@ class Runtime:
                 component._closed = False
                 component._closing = False
                 component._failure = None
+                component._instance_id = uuid.uuid4().hex
                 component._ready.clear()
                 component._failed.clear()
                 for output in component.outputs.values():
                     output._history.clear()
+                    output._publication_sequence = 0
+                    output._port_error = None
             for component in self._order:
                 self._started.append(component)
                 await component.open()

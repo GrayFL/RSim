@@ -3,34 +3,10 @@ import asyncio
 from pathlib import Path
 
 from rsim.core import Component
-from rsim.runtime.host import SharedSensor
+from rsim.runtime.sharing import SharedComponent, PortSpec
 
 
-class MappingView(Component):
-    def __init__(self, source):
-        super().__init__(inputs=(source.output,))
-        self.source = source
-        self.previous = 0
-        self.identities = {}
-        for name in ('pose', 'odometry', 'rgb_map', 'map', 'status'):
-            setattr(self, name, self.signal(name, history=source.output.history_size))
-
-    async def open(self):
-        self.previous = 0
-        self.identities.clear()
-        self.task('mapping-ports', self.receive, hz=100)
-
-    async def receive(self):
-        snapshot = await self.source.get(after=self.previous)
-        self.previous = snapshot.sequence
-        for name, frame in snapshot.data.items():
-            identity = (frame.stamp_ns, frame.received_ns, frame.sequence)
-            if identity == self.identities.get(name):
-                continue
-            await self.outputs[name].publish(frame.data, stamp_ns=frame.stamp_ns,
-                clock=frame.clock, received_ns=frame.received_ns)
-            self.identities[name] = identity
-
+class MappingSave:
     async def save(self, path, *, frame=None, timeout=30):
         """Export the latest (or a retained) RGB cloud as binary PLY."""
         frame = await self.rgb_map.get(timeout=timeout) if frame is None else frame
@@ -57,7 +33,28 @@ class MappingView(Component):
         return await asyncio.to_thread(write)
 
 
+
+def mapping_ports(history=3):
+    return {name: PortSpec(schema=schema, clock='ros:system', history_capacity=history)
+            for name, schema in {'pose': 'graphmap.pose.v1', 'odometry': 'graphmap.pose.v1',
+                                  'map': 'rsim.laser-map.v1', 'rgb_map': 'rsim.pointcloud.v1',
+                                  'status': 'rsim.mapping-status.v1'}.items()}
+
+
+class MappingView(MappingSave, Component):
+    """Public aliases of a native or shared multi-output mapping component."""
+    def __init__(self, source):
+        super().__init__(source)
+        self.source = source
+        for name in mapping_ports():
+            self.expose(name, source.outputs[name])
+
+
+class MappingClient(MappingSave, SharedComponent):
+    pass
+
+
 def Mapper(name='mapping', *, history=3, transport=None):
-    """Connect to an existing provider; exposes pose, rgb_map and provenance map."""
-    return MappingView(SharedSensor(key='mapper:' + name, version='mapping-v2',
-                                   history=history, transport=transport))
+    """Connection-only view; request exactly the outputs the application needs."""
+    return MappingClient(key='mapper:' + name, ports=mapping_ports(history),
+                         interface_version='mapping-ports-v1', transport=transport)

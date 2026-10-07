@@ -6,6 +6,10 @@ ROS 2 原生话题跨机器传输到 RViz 时，Fast DDS 的 UDP 包长、收发
 
 底盘命令与 Pose 使用原生 Cyclone DDS 的小型 JSON 服务，可直接跨机器通信，双端网卡与静态发现配置见 [远程控制](remote-control.md)。下述共享内存传感器通道仍以同机为边界。
 
+## 多输出组件
+
+新多输出接口使用 `SharedProvider` / `SharedComponent`，`serve_shared()` 仅保持源租约，按 Runtime 的具体 Signal 需求创建 exporter；详细协议和历史语义见 [多端口共享](shared-components.md)。建图已迁移到该协议，见 [建图接口](mapping.md)。下方 D435 等单输出例子仍使用兼容适配器。
+
 ## 运行两个独立环境
 
 驱动环境需要与 ROS 兼容的解释器和设备驱动。以 D435 为例，在终端运行：
@@ -119,7 +123,7 @@ DDS 只传描述信息，完整数组通过 Linux tmpfs 的只读 mmap 共享。
 
 ```bash
 python -m pytest -q
-RSIM_TEST_CLIENT_PYTHON=/path/to/client/python python -m pytest -q tests/test_cross_environment.py
+RSIM_TEST_CLIENT_PYTHON=/path/to/client/python python -m pytest -q tests/test_cross_environment.py tests/test_shared_component.py
 ```
 
 测试覆盖原生/ROS 双向互通、晚加入订阅、domain 隔离、连接失败、不同解释器下的数据模型、相同 inode、多层进程、历史查询和源租约。双环境客户端及其子进程通过 import guard 禁止加载 ROS；硬件 Notebook 另外验证真实图像。

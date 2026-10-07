@@ -2,6 +2,14 @@
 from importlib import import_module
 
 _EXPORTS = {
+    'SharedComponent': ('rsim.runtime.sharing', 'SharedComponent'),
+    'SharedProvider': ('rsim.runtime.sharing', 'SharedProvider'),
+    'PortSpec': ('rsim.runtime.sharing', 'PortSpec'),
+    'serve_shared': ('rsim.runtime.sharing', 'serve_shared'),
+    'describe_shared': ('rsim.runtime.sharing', 'describe_shared'),
+    "SampleId": ("rsim.core", "SampleId"),
+    "PortNotBound": ("rsim.core", "PortNotBound"),
+    "ProviderDisconnected": ("rsim.core", "ProviderDisconnected"),
     'Component': ('rsim.core', 'Component'),
     'ComponentError': ('rsim.core', 'ComponentError'),
     'PrimaryComponent': ('rsim.core', 'PrimaryComponent'),
@@ -120,3 +128,6 @@ def __getattr__(name):
 
 def __dir__():
     return sorted(set(globals()) | set(_EXPORTS))
+
+__all__ += ["SampleId", "PortNotBound", "ProviderDisconnected"]
+__all__ += ['SharedComponent', 'SharedProvider', 'PortSpec', 'serve_shared', 'describe_shared']

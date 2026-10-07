@@ -13,3 +13,6 @@ async def serve(sensor):
     await run(sensor)
 
 __all__ = ['D435', 'RobinW', 'Camera', 'Hipnuc', 'Mapper', 'STM32', 'Chassis', 'serve']
+
+from rsim.runtime.sharing import SharedProvider, serve_shared
+__all__ += ["SharedProvider", "serve_shared"]

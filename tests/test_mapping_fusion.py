@@ -100,6 +100,7 @@ def test_mapping_public_pose_uses_fusion_frame_while_colorizer_retains_lio_frame
     output.odom_publisher = SimpleNamespace(publish=lambda msg: None)
     output.broadcaster = SimpleNamespace(sendTransform=lambda msg: None)
     output.odometry_queue.append(native)
+    output._closed = False
     asyncio.run(output.convert())
     assert observations[0].wrd_frame == 'lio' and observations[0].position[0] == 10.
     assert output.latest['odometry'].data.wrd_frame == 'fused'

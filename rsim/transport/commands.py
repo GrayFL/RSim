@@ -4,6 +4,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import shutil
 import time
 import uuid
 
@@ -17,6 +18,8 @@ from .shared import SharedStore, decode
 class CommandChannel:
     directory: str
     topic: str
+    instance_id: str | None = None
+    session_token: str | None = None
 
 
 class CommandClient(Component):
@@ -34,7 +37,7 @@ class CommandClient(Component):
         self.publisher = transport.publisher(self.channel.topic + "/request", durable=False, depth=16)
         self.subscription = transport.subscribe(self.channel.topic + "/reply", self.responses.append,
                                                  durable=False, depth=16)
-        self.store = SharedStore(Path(self.channel.directory) / uuid.uuid4().hex, history=32)
+        self.store = SharedStore(Path(self.channel.directory) / (self.channel.session_token or uuid.uuid4().hex), history=32)
         self.task("command-replies", self.receive, hz=500)
         self.task("discover-provider", self.discover, hz=20)
 
@@ -61,7 +64,8 @@ class CommandClient(Component):
         if self._closed or self._failure is not None:
             raise ComponentError("command channel is closed")
         identifier = uuid.uuid4().hex
-        packet = json.dumps(dict(packet, id=identifier), allow_nan=False)
+        packet = json.dumps(dict(packet, id=identifier, instance_id=self.channel.instance_id,
+                                 session_token=self.channel.session_token), allow_nan=False)
         future = asyncio.get_running_loop().create_future()
         self.pending[identifier] = future
         try:
@@ -122,6 +126,19 @@ class CommandServer(Component):
         self.pending = deque(maxlen=32)
         self.replies = OrderedDict()
         self.publisher = self.subscription = None
+        self.tokens = set() if channel.instance_id is not None else None
+        self.v2_instance = channel.instance_id
+        self.allow_static = channel.instance_id is None
+        self.owner_token = None
+
+    async def release_token(self, token):
+        if self.tokens is not None:
+            self.tokens.discard(token)
+        if self.owner_token == token:
+            await self.sink._safe()
+            self.sink.guard.retire()
+            self.owner_token = None
+        shutil.rmtree(Path(self.channel.directory) / token, ignore_errors=True)
 
     async def open(self):
         transport = self.dependencies[1]
@@ -135,6 +152,12 @@ class CommandServer(Component):
             return
         request = json.loads(self.pending.popleft())
         identifier = request["id"]
+        static = (self.allow_static and request.get('instance_id') is None
+                  and request.get('session_token') is None)
+        if self.tokens is not None and not static and (request.get("instance_id") != self.v2_instance
+                                                       or request.get("session_token") not in self.tokens):
+            self.publisher.publish(json.dumps({"id": identifier, "error": "provider instance or writer lease ended"}))
+            return
         if identifier in self.replies:
             self.publisher.publish(self.replies[identifier])
             return
@@ -145,10 +168,13 @@ class CommandServer(Component):
                 envelope = decode(request["data"], self.channel.directory)
                 if not isinstance(envelope, CommandEnvelope):
                     raise CommandRejected("expected command envelope")
-                writer = self.writer
+                # A shared subscriber cannot inherit a statically planned
+                # Connect's claim merely by using the same port endpoint.
+                writer = self.writer if static else None
                 if writer is not None:
                     writer = writer._binding or writer._canonical or writer
                 result = await self.sink.set(envelope, _writer=writer)
+                self.owner_token = request.get("session_token")
             elif request["op"] == "stop":
                 identity = request["controller_id"], request["controller_epoch"]
                 if self.sink.guard.owner != identity:

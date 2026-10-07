@@ -7,7 +7,6 @@ placements with the same name share one worker and one asyncio event loop.
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from dataclasses import asdict, dataclass
 import json
 import os
@@ -19,11 +18,13 @@ import uuid
 
 import cloudpickle
 
-from rsim.core.component import Component, ComponentError, PrimaryComponent
-from rsim.transport.shared import SharedStore, decode
+from rsim.core.component import Component, ComponentError
+from rsim.transport.shared import SharedStore
 from rsim.transport.descriptor import DescriptorTransport, TransportConfig, transport_config
 from rsim.core.commands import CommandSink
 from rsim.transport.commands import CommandChannel, CommandClient, CommandServer
+from .port_binding import (LocalReference, SharedMemoryChannel, DDSChannel,
+                           PortExporter as _Export, PortImporter as _Import)
 
 
 @dataclass(frozen=True)
@@ -42,89 +43,6 @@ class ProcessPlacement:
         object.__setattr__(self, "transport", transport_config(self.transport))
 
 
-@dataclass(frozen=True)
-class LocalReference:
-    signal: object
-
-
-@dataclass(frozen=True)
-class SharedMemoryChannel:
-    directory: str
-    history: int
-    clock: str | None
-
-
-@dataclass(frozen=True)
-class DDSChannel(SharedMemoryChannel):
-    topic: str
-
-
-class _Export(Component):
-    def __init__(self, source, channel, transport, allocator):
-        super().__init__(transport, inputs=(source,))
-        self.source, self.channel = source, channel
-        self.store = SharedStore(channel.directory, history=channel.history)
-        self.allocator = allocator
-        self.previous, self.latest = 0, None
-        # Installed before any producer.open callback (including seed frames).
-        self.source._prepare = allocator.prepare
-
-    async def open(self):
-        self.publisher = self.dependencies[0].publisher(self.channel.topic)
-        self.task("export", self.export, hz=500)
-        self.task("announce", self.announce, hz=20)
-
-    async def export(self):
-        frame = await self.source.get(after=self.previous)
-        self.latest = json.dumps(self.store.put(frame), allow_nan=False)
-        self.previous = frame.sequence
-        await self.announce()
-
-    async def announce(self):
-        if self.latest is not None:
-            self.publisher.publish(self.latest)
-
-    async def close(self):
-        if hasattr(self, "publisher"):
-            self.publisher.close()
-        self.source._prepare = None
-        self.store.close()
-
-
-class _Import(PrimaryComponent):
-    def __init__(self, channel, transport):
-        super().__init__(transport, history=channel.history, clock=channel.clock)
-        self.channel = channel
-        self.pending = deque(maxlen=32)
-        self.previous = 0
-        self.subscription = None
-
-    async def open(self):
-        self.pending.clear()
-        self.previous = 0
-        self.subscription = self.dependencies[0].subscribe(self.channel.topic, self.pending.append)
-        self.task("import", self.receive, hz=500)
-
-    async def receive(self):
-        while self.pending:
-            descriptor = json.loads(self.pending.popleft())
-            if descriptor["sequence"] <= self.previous:
-                continue
-            try:
-                data = decode(descriptor["data"], self.channel.directory)
-            except FileNotFoundError:
-                continue  # Bounded history already evicted this generation.
-            self.previous = descriptor["sequence"]
-            await self.output.publish(data, stamp_ns=descriptor["stamp_ns"], clock=descriptor["clock"],
-                                      received_ns=descriptor["received_ns"])
-
-    async def close(self):
-        if self.subscription is not None:
-            self.subscription.close()
-            self.subscription = None
-        self.pending.clear()
-
-
 class _View(Component):
     def __init__(self, original, ports, *, supervisor=None, inputs=(), commands=None):
         dependencies = tuple(dict.fromkeys(item.producer for item in ports.values()))
@@ -133,9 +51,7 @@ class _View(Component):
             dependencies = (supervisor,) + dependencies
         super().__init__(*dependencies, inputs=inputs)
         for name, target in ports.items():
-            output = self.signal(name, history=target.history_size, clock=target.clock)
-            output._target = target
-            setattr(self, name, output)
+            self.expose(name, target)
         self.original_type = type(original).__name__
         self.supervisor = supervisor
         for name, client in (commands or {}).items():
@@ -294,6 +210,10 @@ class BindingPlan:
             directory.mkdir(mode=0o700)
         groups = {component: (placement.name if isinstance(placement, ProcessPlacement) else None)
                   for component, placement in self.assignments.items()}
+        self.groups = groups
+        self.canonical_ports = {port: port._resolved() for component in self.components
+                                for port in (*component.outputs.values(), *component.sinks.values())}
+        self.port_ids = {port: uuid.uuid4().hex for port in self.canonical_ports.values()}
         # Executors and DDS contexts are process resources, not physical data
         # sources. A graph may need one local instance in each owning process.
         replicas = {component: set() for component in self.components if component.process_local}
@@ -312,26 +232,20 @@ class BindingPlan:
         for resource, locations in replicas.items():
             if None in locations:
                 groups[resource] = None
-        required = set()
-        exposed = set()
-        for root in self.runtime.roots:
-            owner = root if isinstance(root, Component) else root.producer
-            owner = owner._canonical or owner
-            exposed.add(owner)
+        self.destinations = {}
+        self.command_destinations = {}
+        for port, consumers in self.runtime.demanded_ports.items():
+            source_group = groups[port.producer]
+            destinations = {None if consumer is None else groups[consumer] for consumer in consumers}
+            destinations.discard(source_group)
+            if not destinations:
+                continue
+            table = self.command_destinations if isinstance(port, CommandSink) else self.destinations
+            table[port] = destinations
         for component in self.components:
-            if groups[component] is not None and (component in exposed or component in self.runtime.placement
-                                                   or component.placement is not None):
-                required.update(output._resolved() for output in component.outputs.values())
-            for signal in component.inputs:
-                source = signal._resolved()
-                if groups[source.producer] != groups[component]:
-                    required.update(output._resolved() for output in signal.producer.outputs.values())
-            for dependency in component.dependencies:
-                if groups[dependency] != groups[component]:
-                    required.update(signal._resolved() for signal in dependency.outputs.values())
             for output in component.outputs.values():
                 self.bindings[output] = LocalReference(output)
-        for source in required:
+        for source in self.destinations:
             group = groups[source.producer]
             directory = local_directory if group is None else directories[group]
             identifier = uuid.uuid4().hex
@@ -339,14 +253,15 @@ class BindingPlan:
                                                source.history_size, source.clock,
                                                "/rsim/channels/p" + identifier)
             self.bindings[source] = self.channels[source]
-        for component in self.components:
-            for sink in component.sinks.values():
-                identifier = uuid.uuid4().hex
-                self.command_channels[sink] = CommandChannel(str(self.directory / "commands" / identifier),
-                                                              "/rsim/commands/p" + identifier)
+        for sink in self.command_destinations:
+            identifier = uuid.uuid4().hex
+            self.command_channels[sink] = CommandChannel(str(self.directory / "commands" / identifier),
+                                                          "/rsim/commands/p" + identifier)
         payload = {"components": self.components, "aliases": {alias: alias._canonical
                     for alias in self.runtime._aliases}, "groups": groups, "channels": self.channels,
                     "command_channels": self.command_channels,
+                    "destinations": self.destinations, "command_destinations": self.command_destinations,
+                    "port_ids": self.port_ids,
                     "claims": dict(self.runtime._command_claims), "replicas": replicas}
         # Serialize before starting any resource or installing parent-side views.
         recipe = cloudpickle.dumps(payload)
@@ -365,7 +280,7 @@ class BindingPlan:
         for source, channel in self.channels.items():
             if groups[source.producer] is None:
                 self.exports.append(_Export(source, channel, transport, self.allocator))
-            else:
+            elif None in self.destinations[source]:
                 imports[source] = _Import(channel, transport)
                 # Keep cursors local to the public Signal across Runtime reopen,
                 # even though its physical import endpoint is recreated.
@@ -376,6 +291,8 @@ class BindingPlan:
             group = groups[component]
             if group is None:
                 for sink in component.sinks.values():
+                    if sink not in self.command_channels:
+                        continue
                     writer = payload["claims"].get(sink)
                     if writer is not None and groups[writer] == group:
                         writer = None
@@ -385,10 +302,12 @@ class BindingPlan:
             ports = {name: imports[output._resolved()].output for name, output in component.outputs.items()
                      if output._resolved() in imports}
             commands = {name: CommandClient(self.command_channels[sink], transport)
-                        for name, sink in component.sinks.items()}
+                        for name, sink in component.sinks.items()
+                        if sink in self.command_destinations and None in self.command_destinations[sink]}
             view = _View(component, ports, supervisor=self.hosts[group],
-                         inputs=component.inputs, commands=commands)
-            view.command_targets = component.command_targets
+                         commands=commands)
+            view.command_targets = tuple(sink for sink in component.command_targets
+                                         if groups[sink._resolved().producer] is None)
             self.views[component] = view
         for component, view in self.views.items():
             component._binding = view
@@ -406,7 +325,7 @@ class BindingPlan:
             component._binding = None
         for exporter in self.exports:
             if isinstance(exporter, _Export):
-                exporter.source._prepare = None
+                exporter.source.remove_prepare_hook(exporter)
         if self.allocator is not None:
             self.allocator.close()
         if self.directory is not None:
@@ -425,11 +344,13 @@ def worker_graph(payload, group, directory, transport):
     for source, channel in channels.items():
         if groups[source.producer] == group:
             exports.append(_Export(source, channel, transport, allocator))
-        else:
+        elif group in payload["destinations"][source]:
             imports[source] = _Import(channel, transport)
     for component in components:
         if local(component):
             for sink in component.sinks.values():
+                if sink not in payload["command_channels"]:
+                    continue
                 writer = payload["claims"].get(sink)
                 if writer is not None and groups[writer] == group:
                     writer = None
@@ -439,7 +360,8 @@ def worker_graph(payload, group, directory, transport):
         ports = {name: imports[output._resolved()].output for name, output in component.outputs.items()
                  if output._resolved() in imports}
         commands = {name: CommandClient(payload["command_channels"][sink], transport)
-                    for name, sink in component.sinks.items()}
+                    for name, sink in component.sinks.items()
+                    if group in payload["command_destinations"].get(sink, ())}
         views[component] = _View(component, ports, commands=commands)
     for alias, canonical in payload["aliases"].items():
         alias._canonical = None

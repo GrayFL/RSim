@@ -1,6 +1,7 @@
 """Component lifecycle and metered tasks; no deployment or hardware dependencies."""
 from __future__ import annotations
 import asyncio
+import uuid
 from typing import Awaitable, Callable
 from .errors import ComponentError
 from .signal import Signal, as_signal
@@ -33,6 +34,7 @@ class Component:
         self._failed = asyncio.Event()
         self._services = {}
         self._runtime_peers = ()
+        self._instance_id = uuid.uuid4().hex
 
     @property
     def children(self):
@@ -45,6 +47,22 @@ class Component:
 
     def signal(self, name, *, history=32, clock=None):
         return Signal(self, name, history=history, clock=clock)
+
+    def expose(self, name, signal):
+        """Expose an existing Signal, preserving its producer, history and identity.
+
+        The child is activated as a resource; this alias alone does not request
+        a transport subscription. The wrapper remains part of failure checking.
+        """
+        if hasattr(self, name):
+            raise ValueError(f"public port name conflicts with component attribute: {name}")
+        target = as_signal(signal)
+        output = self.signal(name, history=target.history_size, clock=target.clock)
+        output._target = target
+        if target.producer is not self and target.producer not in self.dependencies:
+            self.dependencies += (target.producer,)
+        setattr(self, name, output)
+        return output
 
     def service(self, name, handler, *, hz, capacity=16):
         """Register an async request handler on this component's metered task loop."""

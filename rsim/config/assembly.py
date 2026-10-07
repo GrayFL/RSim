@@ -10,11 +10,9 @@ class MountedSensor(Component):
         self.source, self.mount, self.name = source, mount, name
         self.parameters = deepcopy(parameters)
         for key, output in source.outputs.items():
-            alias = self.signal(key, history=output.history_size, clock=output.clock)
-            alias._target = output
             if hasattr(self, key):
                 raise ValueError(f"output name conflicts with mounted-sensor attribute: {key}")
-            setattr(self, key, alias)
+            self.expose(key, output)
 
     @property
     def T_base_sensor(self):

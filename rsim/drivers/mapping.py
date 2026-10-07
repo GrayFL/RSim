@@ -4,8 +4,12 @@ import json
 from pathlib import Path
 import re
 
-from rsim.devices.mapping import MappingView
-from rsim.runtime.host import SharedSensor
+from rsim.devices.mapping import MappingSave, mapping_ports
+from rsim.runtime.sharing import SharedProvider
+
+
+class MappingProvider(MappingSave, SharedProvider):
+    pass
 
 
 def Mapper(*, connection, lidar_ip, mounts, database, name='mapping', history=3,
@@ -46,8 +50,8 @@ def Mapper(*, connection, lidar_ip, mounts, database, name='mapping', history=3,
     settings = json.loads(signature)
     def factory():
         return mapping_graph(**settings)
-    return MappingView(SharedSensor(factory, key='mapper:' + name, version='mapping-v2',
-        history=history, transport=transport, provider_version=signature))
+    return MappingProvider(factory=factory, ports=mapping_ports(history), key='mapper:' + name,
+        interface_version='mapping-ports-v1', transport=transport, provider_version=signature)
 
 
 def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topics,
@@ -67,7 +71,7 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
     from rsim.adapters.ros2.laser_mapping import LaserMappingIO
     from rsim.components.mapping import MapLedger, LaserKeyframe
     from rsim.components.projection import PoseHistory, PinholeCamera, colorize_laser
-    from rsim.transport.shared import allocate
+    import numpy as np
 
     prefix = '/rsim/' + name
     frames = {'map': name + '_map', 'odom': name + '_odom', 'base': 'base_footprint'}
@@ -211,9 +215,9 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
     ledger = MapLedger(resolution=options.pop('resolution', .05), frame_id=frames['map'])
     mapping = LaserMappingIO(ledger=ledger, pose_history=PoseHistory(capacity=4096), keyframe_type=LaserKeyframe,
         camera_type=PinholeCamera, colorize=colorize_laser, T_base_imu=T_base_imu,
-        camera_prefix=camera_prefix, allocator=allocate, fusion=fusion, rectify_rgb=rectify_rgb, **options)
+        camera_prefix=camera_prefix, allocator=np.empty, fusion=fusion, rectify_rgb=rectify_rgb, **options)
     result = MappingOutput(inputs, lio, rtabmap, frames=frames, T_base_imu=T_base_imu,
-                         database=database, assumptions=assumptions, allocator=allocate, mapping=mapping)
+                         database=database, assumptions=assumptions, allocator=np.empty, mapping=mapping)
 
     result.scan_odometry = scan2d
     result.fusion = fusion

@@ -171,7 +171,7 @@ def test_native_provider_can_run_in_a_managed_child_process():
 
     async def run(board):
         chassis = STM32(board.port, namespace='/test_' + uuid.uuid4().hex, motion_enabled=True)
-        async with Runtime(chassis, placement={chassis: ProcessPlacement('native-chassis-test')}):
+        async with Runtime(chassis, chassis.velocity, placement={chassis: ProcessPlacement('native-chassis-test')}):
             frame = await chassis.odom.get(timeout=10)
             assert frame.data['pose']['pose']['position']['x'] == 1.
             await chassis.velocity.set(VelocityCommand(angular_z=.1), ttl=.3)

@@ -10,7 +10,7 @@ from typing import Generic, TypeVar
 import uuid
 
 from .component import Component, PrimaryComponent
-from .errors import ComponentError
+from .errors import ComponentError, PortNotBound
 from .signal import as_signal
 
 T = TypeVar("T")
@@ -112,11 +112,14 @@ class CommandSink(Generic[T]):
         self.guard = CommandGuard(max_ttl=max_ttl)
         self._lock = asyncio.Lock()
         self._active = self._armed = False
+        self._bound = True
         self._epoch, self._sequence = uuid.uuid4().hex, 0
         producer.sinks[name] = self
 
     def _resolved(self):
         owner = self.producer._binding or self.producer._canonical
+        if owner and self.name not in owner.sinks:
+            raise PortNotBound(f"command port {self.name!r} was not requested")
         return owner.sinks[self.name]._resolved() if owner else self
 
     def __getstate__(self):
@@ -138,6 +141,8 @@ class CommandSink(Generic[T]):
         actual = self._resolved()
         if actual is not self:
             return await actual.set(command, ttl=ttl, _writer=_writer)
+        if not self._bound:
+            raise PortNotBound(f"command port {self.name!r} was not requested")
         if not self._active or self.producer._closed or self.producer._closing:
             raise ComponentError("command provider is closed")
         claim = self.producer._runtime._command_claims.get(self)

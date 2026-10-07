@@ -78,20 +78,23 @@ def test_timed_points_stride_precedes_stable_time_order_and_preserves_fields():
 
 
 def test_mapping_ports_do_not_republish_old_maps_and_export_ply(tmp_path):
-    from rsim.core import PrimaryComponent
-    class Source(PrimaryComponent):
+    from rsim.core import Component
+    class Source(Component):
+        def __init__(self):
+            super().__init__()
+            for name in ("pose", "odometry", "map", "rgb_map", "status"):
+                setattr(self, name, self.signal(name))
         async def open(self):
             data = np.array([(1., 2., 3., 10, 20, 30)],
                 dtype=[(name, '<f4') for name in 'xyz'] + [(name, 'u1') for name in 'rgb'])
-            self.map = Frame(PointCloud(data, 'map'), 10, 'test', sequence=1)
-            await self.publish({'rgb_map': self.map}, stamp_ns=10, clock='test')
+            await self.rgb_map.publish(PointCloud(data, 'map'), stamp_ns=10, clock='test')
     async def run():
         source = Source()
         mapper = MappingView(source)
         async with Runtime(mapper):
             frame = await mapper.rgb_map.get(timeout=1)
             # Updating status must not invent a newer physical map.
-            await source.publish({'rgb_map': source.map, 'status': Frame({}, 20, 'test')}, stamp_ns=20, clock='test')
+            await source.status.publish({}, stamp_ns=20, clock='test')
             await mapper.status.get(timeout=1)
             assert await mapper.rgb_map.get() is frame
             path = await mapper.save(tmp_path/'map.ply')
@@ -115,8 +118,8 @@ def test_mapping_configuration_requires_explicit_timing_and_keeps_clients_light(
     recipe = tmp_path/'mapping.yaml'
     recipe.write_text('mapping:\n  name: test\n  database: session/map.db\n')
     client = load_mapper(recipe, providers=False)
-    assert client.source.factory is None
-    assert client.source.source_key == 'mapper:test'
+    assert not hasattr(client, 'factory')
+    assert client.component_key == 'mapper:test'
     assert set(client.outputs) == {'pose', 'odometry', 'rgb_map', 'map', 'status'}
 
 
@@ -157,9 +160,7 @@ def test_mapping_output_composes_global_pose_and_detects_lost_corrections():
                       wrd_frame='base', ego_frame='imu')
     output = MappingOutput(inputs, frames={'map': 'map', 'odom': 'odom', 'base': 'base'},
         T_base_imu=T_base_imu, database='test.db', assumptions={})
-    async def capture_snapshot(data, **kwargs):
-        assert 'status' in data
-    output.publish = capture_snapshot
+    output._closed = False
     published, transforms = [], []
     output.odom_publisher = SimpleNamespace(publish=published.append)
     output.broadcaster = SimpleNamespace(sendTransform=transforms.append)
@@ -187,11 +188,11 @@ def test_mapping_output_composes_global_pose_and_detects_lost_corrections():
         output.odometry_queue.append(native)
         await output.convert()
         assert output.latest['pose'] is previous
-        await output.status()
+        await output.emit_status()
         assert output.latest['status'].data['lidar_correction_age_s'] < 1
         output.last_correction_progress -= 6
         with pytest.raises(RuntimeError, match='corrections'):
-            await output.status()
+            await output.emit_status()
     asyncio.run(run())
 
 
@@ -218,21 +219,19 @@ def test_atomic_laser_correction_health_ignores_delayed_replays(monkeypatch):
         sec, nanosec = divmod(stamp, 10**9)
         return SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=nanosec)))
 
-    async def publish(*args, **kwargs):
-        pass
-    output.publish = publish
+    output._closed = False
 
     async def run():
         nonlocal now
         output.corrected(message(now - 4 * 10**9))
         # Old acquisition time is acceptable while processing progresses.
-        await output.status()
+        await output.emit_status()
         fresh_stamp = now - 100_000_000
         io.scan(SimpleNamespace(cloud=message(fresh_stamp)))
         # Separate odometry and scan queues can deliver older data afterwards.
         output.corrected(message(now - 5 * 10**9))
         io.scan(SimpleNamespace(cloud=message(now - 4 * 10**9)))
-        await output.status()
+        await output.emit_status()
         status = output.latest['status'].data
         assert status['lidar_correction_age_s'] == pytest.approx(.1)
         assert status['corrected_odometry_age_s'] == pytest.approx(4.)
@@ -242,7 +241,7 @@ def test_atomic_laser_correction_health_ignores_delayed_replays(monkeypatch):
         now += 6 * 10**9
         io.scan(SimpleNamespace(cloud=message(fresh_stamp)))
         with pytest.raises(RuntimeError, match='corrections'):
-            await output.status()
+            await output.emit_status()
     asyncio.run(run())
 
 
@@ -330,7 +329,10 @@ def test_native_graph_acknowledges_sources_and_applies_individual_pose_updates(t
         T_base_imu=Pose(wrd_frame='base', ego_frame='imu'), camera_prefix='/camera')
     owner = SimpleNamespace(frames=dict(map='map', odom='odom', base='base'),
         database=str(tmp_path/'map.db'), latest={}, correction=None,
-        frame=lambda name, data, stamp: Frame(data, stamp, 'ros:system'))
+        correction_revision={})
+    async def publish_port(name, data, stamp, *, metadata=None):
+        owner.latest[name] = Frame(data, stamp, 'ros:system', metadata=metadata or {})
+    owner.publish_port = publish_port
     io.owner = owner
     stamp = time.time_ns()
     io.pending[stamp] = dict(stamp_ns=stamp, scan_stamp_ns=stamp-10000000,

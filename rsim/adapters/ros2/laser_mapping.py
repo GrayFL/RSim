@@ -197,10 +197,11 @@ class LaserMappingIO:
         if self.ledger.dirty and (time.monotonic() - self.last_snapshot > .4):
             snapshot = await self.run_thread(self.ledger.snapshot, allocator=self.allocator)
             await self.run_thread(self.ledger.save, Path(self.owner.database).with_suffix('.laser'))
-            self.publish_snapshot(snapshot)
+            await self.publish_snapshot(snapshot)
             self.last_snapshot = time.monotonic()
         if not self.ledger.dirty and self.pending_correction is not None:
             self.owner.correction = self.pending_correction
+            self.owner.correction_revision = dict(session_id=self.ledger.session_id, revision=self.ledger.revision)
             self.pending_correction = None
         await self.submit_scan()
         if self.last_scan_received is not None and time.monotonic() - self.last_scan_received > 5:
@@ -318,7 +319,7 @@ class LaserMappingIO:
         for key, message in [('odom', odom), ('info', info), ('scan', scan), ('rgb', image)]:
             self.publishers[key].publish(message)
 
-    def publish_snapshot(self, snapshot):
+    async def publish_snapshot(self, snapshot):
         from graphmap.infopoints import InfoPoints
         info = InfoPoints(snapshot['infopoints'])
         cloud = self.allocator((len(info),), np.dtype([(key, '<f4') for key in 'xyz'] +
@@ -330,8 +331,9 @@ class LaserMappingIO:
         cloud['color_valid'] = (info.color[:, 3] > 0).astype(np.uint8)
         cloud.flags.writeable = False
         stamp = time.time_ns()
-        self.owner.latest['map'] = self.owner.frame('map', snapshot, stamp)
-        self.owner.latest['rgb_map'] = self.owner.frame('rgb_map', PointCloud(cloud, snapshot['frame_id']), stamp)
+        metadata = dict(session_id=snapshot['session_id'], revision=snapshot['revision'])
+        await self.owner.publish_port('map', snapshot, stamp, metadata=metadata)
+        await self.owner.publish_port('rgb_map', PointCloud(cloud, snapshot['frame_id']), stamp, metadata=metadata)
 
     async def close(self):
         if self.owner is None:

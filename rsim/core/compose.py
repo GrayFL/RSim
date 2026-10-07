@@ -25,7 +25,8 @@ class Map(PrimaryComponent):
             result = await result
         if isinstance(result, Frame):
             await self.publish(result.data, stamp_ns=result.stamp_ns, clock=result.clock,
-                               received_ns=result.received_ns)
+                               received_ns=result.received_ns, sample_id=result.sample_id,
+                               metadata=result.metadata)
         else:
             await self.publish(result, stamp_ns=frame.stamp_ns, clock=frame.clock,
                                received_ns=frame.received_ns)
