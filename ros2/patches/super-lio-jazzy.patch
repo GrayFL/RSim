@@ -1,0 +1,621 @@
+diff --git a/src/basic/CMakeLists.txt b/src/basic/CMakeLists.txt
+index 27c6fff..a67ae92 100644
+--- a/src/basic/CMakeLists.txt
++++ b/src/basic/CMakeLists.txt
+@@ -12,7 +12,7 @@ set(CMAKE_C_FLAGS_RELEASE "-O3 -Wall -fPIC")
+ 
+ find_package(ament_cmake REQUIRED)
+ find_package(rclcpp REQUIRED)
+-find_package(Glog REQUIRED)
++find_package(glog REQUIRED CONFIG)
+ find_package(Eigen3 REQUIRED NO_MODULE)
+ find_package(PCL REQUIRED)
+ 
+@@ -36,7 +36,6 @@ target_include_directories(${PROJECT_NAME}
+   $<INSTALL_INTERFACE:include>
+   ${EIGEN3_INCLUDE_DIRS}
+   ${PCL_INCLUDE_DIRS}
+-  ${Glog_INCLUDE_DIRS}
+ )
+ 
+ target_link_libraries(${PROJECT_NAME}
+@@ -44,7 +43,7 @@ target_link_libraries(${PROJECT_NAME}
+   Eigen3::Eigen
+   ${PCL_LIBRARIES}
+   gflags
+-  glog
++  glog::glog
+   pthread
+ )
+ 
+@@ -59,8 +58,8 @@ install(
+ install(DIRECTORY include/ DESTINATION include)
+ 
+ ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+-ament_export_dependencies(rclcpp Eigen3 PCL)
++ament_export_dependencies(rclcpp Eigen3 PCL glog)
+ ament_export_include_directories(include)
+ ament_export_libraries(${PROJECT_NAME})
+ 
+-ament_package()
+\ No newline at end of file
++ament_package()
+diff --git a/src/super_lio/CMakeLists.txt b/src/super_lio/CMakeLists.txt
+index 486cb48..44c278b 100755
+--- a/src/super_lio/CMakeLists.txt
++++ b/src/super_lio/CMakeLists.txt
+@@ -22,11 +22,12 @@ find_package(sensor_msgs REQUIRED)
+ find_package(visualization_msgs REQUIRED)
+ find_package(nav_msgs REQUIRED)
+ find_package(pcl_ros REQUIRED)
+-find_package(livox_ros_driver2 REQUIRED)
++find_package(livox_ros_driver2 QUIET)
++find_package(TBB REQUIRED)
+ 
+ find_package(Eigen3 REQUIRED NO_MODULE)
+ find_package(PCL REQUIRED)
+-find_package(Glog REQUIRED)
++find_package(glog REQUIRED CONFIG)
+ find_package(basic REQUIRED)
+ 
+ 
+@@ -44,10 +45,8 @@ rosidl_get_typesupport_target(
+ 
+ include_directories(
+   include
+-  3rdparty
+   ${EIGEN3_INCLUDE_DIRS}
+   ${PCL_INCLUDE_DIRS}
+-  ${Glog_INCLUDE_DIRS}
+ )
+ 
+ file(GLOB_RECURSE LIO_LIB_SRC "src/lio/*.cpp" "src/ros/*.cpp")
+@@ -63,15 +62,20 @@ ament_target_dependencies(lio PUBLIC
+   visualization_msgs
+   nav_msgs
+   pcl_ros
+-  livox_ros_driver2
+   basic
+   rosidl_default_runtime
+ )
+ 
++if(livox_ros_driver2_FOUND)
++  ament_target_dependencies(lio PUBLIC livox_ros_driver2)
++  target_compile_definitions(lio PUBLIC SUPER_LIO_WITH_LIVOX)
++endif()
++
+ target_link_libraries(lio PUBLIC
++  TBB::tbb
+   Eigen3::Eigen
+   ${PCL_LIBRARIES}
+-  glog
++  glog::glog
+   pthread
+   ${cpp_typesupport_target}
+ )
+@@ -106,7 +110,6 @@ install(TARGETS
+ 
+ install(DIRECTORY
+   include/
+-  3rdparty/
+   DESTINATION include/${PROJECT_NAME}
+ )
+ 
+@@ -122,4 +125,11 @@ install(DIRECTORY rviz/
+   DESTINATION share/${PROJECT_NAME}/rviz
+ )
+ 
++if(BUILD_TESTING)
++  enable_testing()
++  add_executable(imu_timing_test test/imu_timing.cpp)
++  target_link_libraries(imu_timing_test lio)
++  add_test(NAME imu_timing COMMAND imu_timing_test)
++endif()
++
+ ament_package()
+diff --git a/src/super_lio/include/lio/ESKF.h b/src/super_lio/include/lio/ESKF.h
+index 1e07c22..28707bf 100644
+--- a/src/super_lio/include/lio/ESKF.h
++++ b/src/super_lio/include/lio/ESKF.h
+@@ -5,6 +5,7 @@
+ #include "basic/Manifold.h"
+ #include "common/ds.h"
+ #include "params.h"
++#include <deque>
+ 
+ 
+ namespace LI2Sup{
+@@ -53,6 +54,7 @@ public:
+                             const BASIC::V3& gravity = BASIC::V3(0, 0, -9.8));
+ 
+   bool Predict(const IMUData& imu);
++  void PrimeIMU(const IMUData& imu, double stamp);
+ 
+   using ObsFunc = std::function<void(const KFState& kf_state, BASIC::M6& HT_Vinv_H, BASIC::V6& HT_Vinv_r)>;
+   bool UpdateObserve(ObsFunc obs);
+@@ -86,6 +88,7 @@ public:
+   bool Predict(const IMUData& imu, DynamicState& state_imu, DynamicState& state_robot);
+ 
+ private:
++  bool PredictForward(const IMUData& imu, DynamicState& state_imu, DynamicState& state_robot);
+   void BuildNoise(const Options& options);
+   void Update();
+   
+@@ -115,6 +118,8 @@ private:
+ 
+   Options options_;
+ 
++  bool forward_dirty_=true;
++  std::deque<IMUData> forward_history_;
+   double  forward_time_ = -1;
+   IMUData forward_last_imu_;
+   BASIC::SO3 fw_R_;
+diff --git a/src/super_lio/include/lio/params.h b/src/super_lio/include/lio/params.h
+index 18b80a9..cb57dc4 100644
+--- a/src/super_lio/include/lio/params.h
++++ b/src/super_lio/include/lio/params.h
+@@ -75,6 +75,7 @@ namespace LI2Sup{
+   
+   /// output  
+   extern bool g_2_robot;
++  extern bool g_cloud_pose;
+   extern bool g_2_plan_env_world;
+   extern bool g_2_plan_env_body;
+   extern bool g_2_ml_map;
+diff --git a/src/super_lio/include/ros/ROSWrapper.h b/src/super_lio/include/ros/ROSWrapper.h
+index 2ba36fc..5614a3c 100644
+--- a/src/super_lio/include/ros/ROSWrapper.h
++++ b/src/super_lio/include/ros/ROSWrapper.h
+@@ -3,6 +3,8 @@
+ #define ROSWRAPPER_HPP_
+ 
+ #include <map>
++#include <fstream>
++#include <chrono>
+ #include <tuple>
+ #include <deque>
+ #include <vector>
+@@ -24,7 +26,9 @@
+ #include <geometry_msgs/msg/point.hpp>
+ #include <geometry_msgs/msg/pose_stamped.hpp>
+ #include <visualization_msgs/msg/marker_array.hpp>
++#ifdef SUPER_LIO_WITH_LIVOX
+ #include <livox_ros_driver2/msg/custom_msg.hpp>
++#endif
+ #include <pcl_conversions/pcl_conversions.h>
+ 
+ /// msgs
+@@ -46,14 +50,17 @@ namespace LI2Sup{
+ 
+ void LoadParamFromRos(rclcpp::Node& node);
+ 
++#ifdef SUPER_LIO_WITH_LIVOX
+ void livox2pcl(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg, BASIC::CloudPtr& point_cloud);
++#endif
+ 
+ class ROSWrapper : public rclcpp::Node {
+ public:
+   explicit ROSWrapper(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
+-  ~ROSWrapper(){};
++  ~ROSWrapper();
+   using Ptr = std::shared_ptr<ROSWrapper>;
+   bool sync_measure(MeasureGroup&);
++  void recordFilterState();
+ 
+   void setESKF(ESKF::Ptr& eskf) { eskf_ = eskf;}
+ 
+@@ -85,8 +92,11 @@ public:
+   }
+ 
+ private:
++  std::ofstream filter_state_csv_;
+   void imuHandler(const sensor_msgs::msg::Imu::SharedPtr msg);
++#ifdef SUPER_LIO_WITH_LIVOX
+   void livoxHandler(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg);
++#endif
+   void stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+ 
+   void setupParams();
+@@ -95,7 +105,9 @@ private:
+ private:
+   rclcpp::CallbackGroup::SharedPtr cb_sensor_;
+   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
++#ifdef SUPER_LIO_WITH_LIVOX
+   rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr sub_lidar_;
++#endif
+   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_lidar_std_;
+ 
+   std::deque<IMUData>   imu_buffer_;
+@@ -105,7 +117,6 @@ private:
+   double last_timestamp_lidar_ = -1.0;
+ 
+   ESKF::Ptr eskf_{nullptr};
+-
+   nav_msgs::msg::Path path_;
+   geometry_msgs::msg::PoseStamped msg2uav_;
+   sensor_msgs::msg::PointCloud2 global_map_msg_;
+diff --git a/src/super_lio/package.xml b/src/super_lio/package.xml
+index 7f65979..8448f4a 100755
+--- a/src/super_lio/package.xml
++++ b/src/super_lio/package.xml
+@@ -16,7 +16,6 @@
+   <depend>visualization_msgs</depend>
+   <depend>pcl_ros</depend>
+   <depend>nav_msgs</depend>
+-  <depend>livox_ros_driver2</depend>
+   <depend>basic</depend>
+ 
+   <build_depend>rosidl_default_generators</build_depend>
+diff --git a/src/super_lio/src/lio/ESKF.cpp b/src/super_lio/src/lio/ESKF.cpp
+index f7a64d2..b1265dd 100644
+--- a/src/super_lio/src/lio/ESKF.cpp
++++ b/src/super_lio/src/lio/ESKF.cpp
+@@ -94,6 +94,7 @@ void ESKF::SetX(const SysState& x) {
+   fw_R_ = R_;
+   fw_p_ = p_;
+   fw_v_ = v_;
++  forward_dirty_=true;
+ }
+ 
+ 
+@@ -129,22 +130,37 @@ void ESKF::Update() {
+   fw_R_ = R_;
+   fw_p_ = p_;
+   fw_v_ = v_;
+-  forward_time_ = current_obs_time_;
++  forward_dirty_=true;
+ }
+ 
+ 
+-bool ESKF::Predict(const IMUData& imu, DynamicState& state_imu, DynamicState& state_robot){
+-  if(!init_) {
+-    return false;
+-  }
++void ESKF::PrimeIMU(const IMUData& imu, double stamp) {
++  last_imu_=imu;last_imu_.secs=stamp;
++  last_imu_time_=current_time_=stamp;
++  body_omega_=imu.gyr-bg_;
++  global_acc_=R_.R()*(imu_scale_*imu.acc-ba_)+g_;
++  forward_dirty_=true;
++}
+ 
+-  /// first time predict
+-  if(forward_time_ < 0){
+-    forward_time_ = imu.secs;
+-    forward_last_imu_ = imu;
+-    return false;
++bool ESKF::Predict(const IMUData& imu, DynamicState& state_imu, DynamicState& state_robot) {
++  if (!imu.acc.allFinite() || !imu.gyr.allFinite() || !std::isfinite(imu.secs)) return false;
++  if (!forward_history_.empty() && imu.secs<=forward_history_.back().secs) return false;
++  forward_history_.push_back(imu);
++  while (forward_history_.size()>1 && forward_history_.front().secs<imu.secs-2.) forward_history_.pop_front();
++  if (!init_) return false;
++  if (forward_dirty_) {
++    fw_R_=R_;fw_p_=p_;fw_v_=v_;
++    forward_time_=current_time_;forward_last_imu_=last_imu_;
++    forward_dirty_=false;
++    bool advanced=false;
++    for (const auto& sample : forward_history_)
++      if (sample.secs>forward_time_) advanced=PredictForward(sample,state_imu,state_robot);
++    return advanced && forward_time_==imu.secs;
+   }
++  return PredictForward(imu,state_imu,state_robot);
++}
+ 
++bool ESKF::PredictForward(const IMUData& imu, DynamicState& state_imu, DynamicState& state_robot) {
+   double dt = imu.secs - forward_time_;
+ 
+   if(dt < 0 || dt > 0.2){
+@@ -185,35 +201,20 @@ bool ESKF::Predict(const IMUData& imu, DynamicState& state_imu, DynamicState& st
+ 
+ 
+ bool ESKF::Predict(const IMUData& imu) {
+-
+-  if(last_imu_time_ < 0){
+-    last_imu_time_ = imu.secs;
+-    last_imu_ = imu;
+-    return false;
+-  }
+-
+-  if(imu.secs <= last_obs_time_){
+-    last_imu_time_ = imu.secs;
+-    last_imu_ = imu;
+-    return false;
+-  }
+-  
+-  current_time_ = imu.secs;
+-
+-  double dt;
+-  if(last_imu_time_ < last_obs_time_){
+-    dt = imu.secs - last_obs_time_;
+-  }else if (imu.secs > current_obs_time_){
+-    dt = current_obs_time_ - last_imu_time_;
+-    current_time_ = current_obs_time_;
+-  }else{
+-    dt = imu.secs - last_imu_time_;
+-  }
+-
+-  V3 acc = 0.5 * (imu.acc + last_imu_.acc);
+-  acc = imu_scale_ * acc;
+-  acc = acc - ba_;
+-  body_omega_ = 0.5 * (imu.gyr + last_imu_.gyr) - bg_;
++  if (!imu.acc.allFinite() || !imu.gyr.allFinite() || !std::isfinite(imu.secs)) return false;
++  if (last_imu_time_<0) {PrimeIMU(imu,imu.secs);return false;}
++  const double target=std::min(imu.secs,current_obs_time_);
++  const double dt=target-current_time_;
++  if (dt<=0 || dt>.2 || imu.secs<=current_time_) return false;
++  // A look-ahead IMU sample brackets the scan end. Keep an interpolated IMU
++  // at the state time so the remainder of this interval is used next scan.
++  const double u=dt/(imu.secs-current_time_);
++  IMUData effective=imu;
++  effective.secs=target;
++  effective.acc=last_imu_.acc+u*(imu.acc-last_imu_.acc);
++  effective.gyr=last_imu_.gyr+u*(imu.gyr-last_imu_.gyr);
++  V3 acc=imu_scale_*(.5*(effective.acc+last_imu_.acc))-ba_;
++  body_omega_=.5*(effective.gyr+last_imu_.gyr)-bg_;
+   M3 Jr_dt = (dt * RightJacobianSO3(body_omega_, dt)).cast<scalar>();   // J_l(-phi) = J_r(phi)
+ 
+   M3 R_m3 = R_.R_;
+@@ -241,8 +242,8 @@ bool ESKF::Predict(const IMUData& imu) {
+   v_ = v_ + global_acc_ * dt;
+   R_ = R_ * SO3::Exp(body_omega_, dt);
+ 
+-  last_imu_time_ = imu.secs;
+-  last_imu_ = imu;
++  current_time_=last_imu_time_=target;
++  last_imu_=effective;
+   return true;
+ }
+ 
+diff --git a/src/super_lio/src/lio/params.cpp b/src/super_lio/src/lio/params.cpp
+index 747ae8b..d747ef8 100644
+--- a/src/super_lio/src/lio/params.cpp
++++ b/src/super_lio/src/lio/params.cpp
+@@ -63,6 +63,7 @@ namespace LI2Sup{
+   bool g_2_ml_map = false;
+   bool g_visual_map = true;
+   bool g_visual_dense = false;
++  bool g_cloud_pose = false;
+   int  g_pub_step;
+ 
+   /// for planner
+@@ -74,4 +75,4 @@ namespace LI2Sup{
+   bool g_update_map = false;
+   double g_init_px, g_init_py, g_init_pz, g_init_roll, g_init_pitch, g_init_yaw;
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/src/super_lio/src/lio/super_lio.cpp b/src/super_lio/src/lio/super_lio.cpp
+index d1a3ae7..23c5f2d 100644
+--- a/src/super_lio/src/lio/super_lio.cpp
++++ b/src/super_lio/src/lio/super_lio.cpp
+@@ -181,6 +181,7 @@ bool SuperLIO::map_init(){
+ 
+   ivox_->insert(points_world_v3_);
+   kf_->SetLastObsTime(measures_.lidar.end_time);
++  if (!measures_.imu.empty()) kf_->PrimeIMU(measures_.imu.back(),measures_.lidar.end_time);
+ 
+   // 20 Hz for 1.0 seconds. Integral coverage area > 70%
+   if(frame_num_ > 3){
+@@ -204,6 +205,7 @@ void SuperLIO::stateProcess(){
+     Observe();
+     UpdateMap();
+   }
++  data_wrapper_->recordFilterState();
+   Output();
+   caceData();
+ }
+@@ -363,8 +365,7 @@ void SuperLIO::Propagation_Undistort(){
+   propagate_states_.emplace_back(kf_->GetDynamicState());
+   kf_->SetObsTime(measures_.lidar.end_time);
+   for (auto &imu : measures_.imu) {
+-    kf_->Predict(imu);
+-    propagate_states_.emplace_back(kf_->GetDynamicState());
++    if (kf_->Predict(imu)) propagate_states_.emplace_back(kf_->GetDynamicState());
+   }
+ 
+   static const M3 TLI_R = g_lidar_imu.R_;
+@@ -560,6 +561,11 @@ void SuperLIO::UpdateMap() {
+ void SuperLIO::Output(){
+   auto state = kf_->GetNavState();
+   data_wrapper_->pub_odom(state);  
++  // Atomic scan-end IMU pose + points deskewed into that same IMU frame.
++  // Keep the full accepted scan, independent of visualization/downsampling.
++  if (g_cloud_pose) {
++    data_wrapper_->pub_cloud_body_pose(scan_undistort_full_, state);
++  }
+ 
+   Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();
+   transformation.block<3, 3>(0, 0) = state.R.R_.cast<float>();
+@@ -589,4 +595,4 @@ void SuperLIO::printTimeRecord(){
+   time_record_.PrintAll();
+ }
+ 
+-} // namespace END.
+\ No newline at end of file
++} // namespace END.
+diff --git a/src/super_lio/src/ros/ROSWrapper.cpp b/src/super_lio/src/ros/ROSWrapper.cpp
+index 5e156b4..43dbd88 100644
+--- a/src/super_lio/src/ros/ROSWrapper.cpp
++++ b/src/super_lio/src/ros/ROSWrapper.cpp
+@@ -1,3 +1,5 @@
++#include <filesystem>
++#include <iomanip>
+ 
+ #include "ros/ROSWrapper.h"
+ #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+@@ -150,6 +152,9 @@ void LoadParamFromRos(rclcpp::Node& node)
+   node.get_parameter("lio.submap.submap_capacity", g_submap_capacity);
+ 
+   // visual
++  node.declare_parameter<bool>("lio.output.cloud_pose", false);
++  node.get_parameter("lio.output.cloud_pose", g_cloud_pose);
++
+   node.declare_parameter<bool>("lio.output.robot", false);
+   node.get_parameter("lio.output.robot", g_2_robot);
+ 
+@@ -195,6 +200,7 @@ void LoadParamFromRos(rclcpp::Node& node)
+ }
+ 
+ 
++#ifdef SUPER_LIO_WITH_LIVOX
+ void livox2pcl(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg, CloudPtr& point_cloud){
+   point_cloud->clear();
+   CloudPtr cloud_full(new PointCloudType());
+@@ -236,6 +242,8 @@ void livox2pcl(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg, CloudPtr
+     }
+   }
+ }
++#endif
++
+ 
+ 
+ std::string lidarTypeToString(int type) {
+@@ -299,6 +307,20 @@ void ROSWrapper::setupIO(){
+   auto lidar_qos = rclcpp::QoS(rclcpp::KeepLast(20))
+                    .best_effort()
+                    .durability_volatile();
++  if (this->declare_parameter<bool>("lio.ros.reliable_lidar", false)) {
++    lidar_qos.reliable();
++  }
++
++  const auto state_path=this->declare_parameter<std::string>("lio.diagnostics.state_csv", "");
++  if (!state_path.empty()) {
++    if (std::filesystem::exists(state_path)) throw std::runtime_error("State CSV already exists: "+state_path);
++    filter_state_csv_.open(state_path);
++    if (!filter_state_csv_) throw std::runtime_error("Cannot open state CSV: "+state_path);
++    filter_state_csv_ << "stamp,px,py,pz,vx,vy,vz,bgx,bgy,bgz,bax,bay,baz,gx,gy,gz,qx,qy,qz,qw";
++    for (int i=0;i<18;++i) filter_state_csv_ << ",variance_" << i;
++    filter_state_csv_ << '\n';
++    filter_state_csv_ << std::setprecision(17);
++  }
+ 
+   sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(
+       g_imu_topic,
+@@ -307,12 +329,16 @@ void ROSWrapper::setupIO(){
+       sub_opt);
+ 
+   if (g_lidar_type == LID_TYPE::LIVOX) {
++#ifdef SUPER_LIO_WITH_LIVOX
+     sub_lidar_ =
+         this->create_subscription<livox_ros_driver2::msg::CustomMsg>(
+             g_lidar_topic,
+             lidar_qos,
+             std::bind(&ROSWrapper::livoxHandler, this, std::placeholders::_1),
+             sub_opt);
++#else
++    throw std::runtime_error("Livox message support was not built");
++#endif
+   } else {
+     sub_lidar_std_ =
+         this->create_subscription<sensor_msgs::msg::PointCloud2>(
+@@ -416,6 +442,7 @@ void ROSWrapper::imuHandler(const sensor_msgs::msg::Imu::SharedPtr msg){
+ }
+ 
+ 
++#ifdef SUPER_LIO_WITH_LIVOX
+ void ROSWrapper::livoxHandler(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg){
+   if(msg->point_num < 10) return;
+   LidarData lidar_data;
+@@ -439,6 +466,8 @@ void ROSWrapper::livoxHandler(const livox_ros_driver2::msg::CustomMsg::SharedPtr
+   lidar_data.end_time   = lidar_data.start_time + offset_time;
+   lidar_buffer_.push_back(lidar_data);
+ }
++#endif
++
+ 
+ 
+ void ROSWrapper::stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr msg){
+@@ -529,6 +558,23 @@ void ROSWrapper::stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr ms
+ }
+ 
+ 
++ROSWrapper::~ROSWrapper() = default;
++
++void ROSWrapper::recordFilterState() {
++  if (!filter_state_csv_.is_open() || !eskf_) return;
++  const auto state=eskf_->GetSysState();
++  filter_state_csv_ << state.timestamp;
++  const std::array<V3,5> vectors{state.p,state.v,state.bg,state.ba,eskf_->GetGravity()};
++  for (const auto& value : vectors)
++    for (int i=0;i<3;++i) filter_state_csv_ << ',' << value[i];
++  const auto q=state.R.coeffs();
++  for (int i=0;i<4;++i) filter_state_csv_ << ',' << q[i];
++  const auto covariance=eskf_->GetCov();
++  for (int i=0;i<18;++i) filter_state_csv_ << ',' << covariance(i,i);
++  filter_state_csv_ << '\n';
++  if (!filter_state_csv_) throw std::runtime_error("Failed writing filter state CSV");
++}
++
+ bool ROSWrapper::sync_measure(MeasureGroup& meas){
+   if (lidar_buffer_.empty() || imu_buffer_.empty()) {
+     return false;
+@@ -558,6 +604,11 @@ bool ROSWrapper::sync_measure(MeasureGroup& meas){
+     imu_buffer_.pop_front();
+   }
+ 
++  // Retain the first future IMU in the queue: the current scan uses its
++  // interpolated boundary value and the next scan consumes the remainder.
++  if (eskf_ && eskf_->init_ && !imu_buffer_.empty() && imu_buffer_.front().secs>meas.lidar.end_time)
++    meas.imu.push_back(imu_buffer_.front());
++
+   last_timestamp_lidar_ = meas.lidar.end_time;
+   lidar_buffer_.pop_front();
+   lidar_pushed_ = false;
+@@ -670,6 +721,7 @@ void ROSWrapper::pub_cloud_body_pose(const CloudPtr& pc,
+         "/lio/body/cloud_pose", 10);
+   super_lio::msg::CloudPose cloud_pose;
+   pcl::toROSMsg(*pc, cloud_pose.cloud);
++  cloud_pose.cloud.header.frame_id = "imu";
+   cloud_pose.cloud.header.stamp = toRosTime(state.timestamp); 
+   cloud_pose.pose.position.x = state.p[0];
+   cloud_pose.pose.position.y = state.p[1];
+@@ -791,4 +843,4 @@ void ROSWrapper::set_initial_data(BASIC::SE3& init_pose, bool& flg_get_init_gues
+ }
+ 
+ 
+-} // namespace END.
+\ No newline at end of file
++} // namespace END.
+diff --git a/src/super_lio/test/imu_timing.cpp b/src/super_lio/test/imu_timing.cpp
+new file mode 100644
+index 0000000..c6acf88
+--- /dev/null
++++ b/src/super_lio/test/imu_timing.cpp
+@@ -0,0 +1,35 @@
++#include "lio/ESKF.h"
++#include <iostream>
++#include <stdexcept>
++using namespace LI2Sup;using namespace BASIC;
++void check(bool ok,const char* msg){if(!ok)throw std::runtime_error(msg);}
++IMUData sample(double t,bool varying=false){IMUData d;d.secs=t;d.acc=V3(0,0,g_gravity_norm);d.gyr=V3(0,0,varying?.2+.5*t:1.);return d;}
++void init(ESKF& f,bool varying=false){
++ f.SetInitialConditions(ESKF::Options(),V3::Zero(),V3::Zero(),1.,V3(0,0,-g_gravity_norm));
++ auto state=f.GetSysState();state.timestamp=0;f.SetX(state);f.PrimeIMU(sample(0,varying),0);f.init_=true;
++}
++int main(){
++ ESKF f;init(f);f.SetObsTime(.095);
++ for(int i=1;i<=10;++i)f.Predict(sample(i*.01));
++ check(std::abs(f.GetTime()-.095)<1e-12,"did not reach scan end");
++ check(std::abs(f.GetNavState().R.log_vee()[2]-.095)<1e-6,"lost boundary rotation");
++ f.SetLastObsTime(.095);f.SetObsTime(.195);
++ // The look-ahead sample at .10 was not consumed by the queue.
++ for(int i=10;i<=20;++i)f.Predict(sample(i*.01));
++ check(std::abs(f.GetTime()-.195)<1e-12,"second scan did not reach endpoint");
++ check(std::abs(f.GetNavState().R.log_vee()[2]-.195)<1e-6,"dropped or duplicated interval remainder");
++ const double old_time=f.GetTime();f.SetObsTime(1.0);
++ check(!f.Predict(sample(1.0))&&f.GetTime()==old_time,"integrated an unbounded IMU gap");
++ ESKF delayed;init(delayed,true);DynamicState output,robot;
++ for(int i=1;i<=35;++i)delayed.Predict(sample(i*.01,true),output,robot);
++ delayed.SetObsTime(.095);
++ for(int i=1;i<=10;++i)delayed.Predict(sample(i*.01,true));
++ delayed.UpdateObserve([](const ESKF::KFState&,M6& H,V6& r){H.setZero();r.setZero();});
++ check(delayed.Predict(sample(.36,true),output,robot),"delayed correction stalled high-frequency output");
++ const double expected=.2*.36+.25*.36*.36;
++ SO3 rotation;rotation.R_=output.R;
++ check(std::abs(rotation.log_vee()[2]-expected)<2e-6,"did not replay variable-rate IMU history after correction");
++ check(std::abs(output.time-.36)<1e-12,"prediction stamp does not match state");
++ check(output.p.norm()<1e-5,"stationary translation changed during rotation");
++ std::cout<<"scan boundary integration and delayed forward replay passed\n";
++}

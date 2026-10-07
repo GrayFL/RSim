@@ -82,9 +82,9 @@ Mount 表示 **`T_base_sensor`：传感器局部坐标 → base_frame**。positi
 ## 运行示例
 
 ```bash
-python -m examples.imu_rig --mode serial
-python -m examples.imu_rig --mode ros2
-python -m examples.imu_rig --select robot --frames 30
+python -m examples.imu.imu_rig --mode serial
+python -m examples.imu.imu_rig --mode ros2
+python -m examples.imu.imu_rig --select robot --frames 30
 ```
 
-默认只读取 IMU，不依赖底盘在线。配置示例见 `configs/sensors.yaml`，交互示例见 [Notebook](../examples/imu_rig.ipynb)；程序报告和采样数组保存到根目录 assets。各个传感器保留自己的时间域，此处的组合不会自动完成跨设备时钟同步或融合。
+默认只读取 IMU，不依赖底盘在线。配置示例见 `configs/sensors.yaml`，交互示例见 [Notebook](../examples/imu/imu_rig.ipynb)；程序报告和采样数组保存到根目录 assets。各个传感器保留自己的时间域，此处的组合不会自动完成跨设备时钟同步或融合。

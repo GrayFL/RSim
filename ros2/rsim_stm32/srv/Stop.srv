@@ -1,0 +1,7 @@
+# Can only zero a command session owned by this identity.
+string controller_id
+string controller_epoch
+---
+bool stopped
+string reason
+int64 transmitted_ns

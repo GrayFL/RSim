@@ -33,6 +33,8 @@ async with Runtime(robot):
 
 运动成功返回最终 `Pose`，不返回 ROS 消息。距离使用起始坐标系的 X 向投影，不是轮子累计路程；转角逐帧展开，支持超过 180° 及多圈，要求相邻位姿变化小于 180°。默认到达容差为 1 cm / 0.02 rad，连续 3 个新位姿满足条件才完成。默认限速 0.15 m/s、0.5 rad/s，可通过构造参数调整。速度按比例误差和剩余制动距离限幅；`linear_acceleration` / `angular_acceleration` 用于制动距离包络，并非执行器加速度保证。
 
+原地旋转可设置 `min_angular`（rad/s，默认 0），提高比例控制的低速下限，以适配已测得的执行器死区。它必须介于 0 和 `max_angular` 之间，仍受剩余制动距离限幅；到达容差、零角度请求和停止操作始终发送零速。该参数不作用于直线运动的航向修正，也不保证达到任意小的角度容差，需要结合执行器响应和反馈延迟选择。
+
 同一时刻只允许一个运动，第二个请求立即报错。调用者取消、超时、位姿停更、provider 错误或 Runtime 退出时归零。`stop()` 会让当前运动抛出 `MotionError`；取消保留 `CancelledError`，期限到达抛出 `TimeoutError`。默认运动期限根据距离/角度和最大速度估算，也可以指定。到达、取消和关闭等待的是速度 provider 接受零速，不代表机械制动完成。
 
 控制器独占 `velocity` 端口，使用已有 command claim 和 TTL，不应同时直接写这个端口。默认 TTL 0.25 s，底盘远端仍独立检查过期并执行 deadman。停止或故障时会尝试发送零速；通信已经断开时依赖 provider 的独立 TTL。控制循环是 Component 的 Metronome task，应用仍可并发执行其他协程。
@@ -64,4 +66,6 @@ Pose 在跨进程时使用封闭的 translation/quaternion/scale/frame-label sch
 
 这是平面相对运动原型，未实现避障、全局定位、坡道三维姿态或轮滑补偿。轮式里程计与 IMU 不能消除长期漂移；传感器噪声和控制参数需要按设备标定。估计器没有外点门控，输入突变可能影响闭环。实现参考 [robot_localization 的传感器配置原则](https://github.com/cra-ros-pkg/robot_localization/blob/rolling-devel/doc/configuring_robot_localization.rst)，采用独立的简化平面模型。
 
-运行示例见 [底盘控制 Notebook](../examples/chassis_motion.ipynb)。默认不连接硬件；实机单元格读取调用方配置，固定关闭运动，只执行零速请求。
+运行示例见 [底盘控制 Notebook](../examples/control/chassis_motion.ipynb)。默认不连接硬件；实机单元格读取调用方配置，固定关闭运动，只执行零速请求。
+
+电机板直接连接应用主机时，可使用 [STM32 本机驱动与 IMU 校正](local-chassis.md)。它提供相同的速度端口，本机 EKF 与控制器可直接复用；[本机 Notebook](../examples/control/local_chassis.ipynb) 展示从配置组装到位姿和运动调用。

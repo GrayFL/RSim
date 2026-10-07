@@ -230,6 +230,54 @@ def test_remote_command_rejection_preserves_ssh_session(endpoint):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("stop_rejected", [False, True])
+def test_expired_zero_stops_only_acknowledged_remote_owner(endpoint, stop_rejected):
+    from rsim import CommandRejected
+    path = Path(endpoint.script)
+    script = path.read_text().replace("counter = 0", "counter = 0\nowner = None\npublished = 0")
+    script = script.replace(
+        "elif op=='publish': result={'published':True,'echo':request['data']}",
+        """elif op=='publish':
+            if published:
+                send(dict(op='reply',id=request['id'],error='command expired',
+                          error_type='command_rejected',reason='expired'))
+                continue
+            published += 1
+            owner = (request['command']['controller_id'],request['command']['controller_epoch'])
+            result={'published':True}
+        elif op=='stop':
+            identity = (request['controller_id'],request['controller_epoch'])
+            if identity != owner or REJECT_STOP:
+                send(dict(op='reply',id=request['id'],error='stop request does not own this command session',
+                          error_type='command_rejected',reason='invalid'))
+                continue
+            result={'stopped':True,'published':published}""".replace("REJECT_STOP", repr(stop_rejected)))
+    path.write_text(script)
+
+    async def run():
+        chassis = Chassis(endpoint)
+        async with Runtime(chassis):
+            assert (await chassis.stop())["published"]
+            accepted = chassis._last_command
+            # A nonzero rejection must not be converted to successful stop.
+            with pytest.raises(CommandRejected, match="expired"):
+                await chassis.set_velocity(.1)
+            if stop_rejected:
+                with pytest.raises(CommandRejected, match="does not own"):
+                    await chassis.stop()
+                # This fixture deliberately rejects ownership. Avoid repeating
+                # that expected rejection during its separate teardown phase.
+                chassis.velocity._armed = False
+            else:
+                result = await chassis.stop()
+                assert result == {"stopped": True, "published": 1}
+                feedback = (await chassis.velocity_feedback.get()).data
+                assert feedback["command"].linear_x == feedback["command"].angular_z == 0
+            assert chassis._last_command is accepted
+            assert chassis.bridge._failure is None
+    asyncio.run(run())
+
+
 def test_connection_loss_propagates_to_sensor_get(endpoint):
     async def run():
         bridge = Ros1Bridge(endpoint)

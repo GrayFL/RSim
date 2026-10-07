@@ -2,6 +2,10 @@
 
 RSim 将驱动启动和应用连接分为两个入口。`rsim.drivers` 在具备设备驱动的环境中启动共享源；`rsim` 的设备工厂只连接已有源。两侧仍使用同一套 `Component`、`Signal.get()`、`Runtime` 和组合接口。
 
+ROS 2 原生话题跨机器传输到 RViz 时，Fast DDS 的 UDP 包长、收发缓冲与 SHM 配置见 [ROS 2 网络部署](ros2-network.md)。该配置与下述原生 Cyclone DDS 描述信息后端分别生效。
+
+底盘命令与 Pose 使用原生 Cyclone DDS 的小型 JSON 服务，可直接跨机器通信，双端网卡与静态发现配置见 [远程控制](remote-control.md)。下述共享内存传感器通道仍以同机为边界。
+
 ## 运行两个独立环境
 
 驱动环境需要与 ROS 兼容的解释器和设备驱动。以 D435 为例，在终端运行：
@@ -23,7 +27,7 @@ async with Runtime(color, depth):
     same = await depth.get(timestamp_ns=distance.stamp_ns, clock=distance.clock)
 ```
 
-可以在 Jupyter 中直接运行上述异步代码。普通脚本则放入异步函数，由 `asyncio.run()` 启动。可执行示例见 [DDS 客户端 Notebook](../examples/dds_client.ipynb)。
+可以在 Jupyter 中直接运行上述异步代码。普通脚本则放入异步函数，由 `asyncio.run()` 启动。可执行示例见 [DDS 客户端 Notebook](../examples/camera/dds_client.ipynb)。
 
 驱动也可以在 Notebook 中运行，无需 ROS 命令行启动 Python 节点：
 

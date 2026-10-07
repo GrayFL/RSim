@@ -42,6 +42,7 @@ class ChassisController(Component):
     """
     def __init__(self, chassis=None, *, pose=None, velocity=None, T_body_imu=None,
                  motion_enabled=False, hz=30, max_linear=.15, max_angular=.5,
+                 min_angular=0.,
                  linear_acceleration=.3, angular_acceleration=1.,
                  distance_tolerance=.01, angle_tolerance=.02, pose_timeout=.5,
                  command_ttl=.25, settle_samples=3, ekf_options=None):
@@ -61,6 +62,8 @@ class ChassisController(Component):
                   distance_tolerance, angle_tolerance, pose_timeout, command_ttl]
         if not all(math.isfinite(value) and value > 0 for value in values):
             raise ValueError("controller rates, limits and tolerances must be positive")
+        if not math.isfinite(min_angular) or not 0 <= min_angular <= max_angular:
+            raise ValueError("min_angular must be finite and between zero and max_angular")
         if not isinstance(settle_samples, int) or settle_samples < 1:
             raise ValueError("settle_samples must be a positive integer")
         if command_ttl > velocity.guard.max_ttl_ns * 1e-9 or command_ttl <= 2 / hz:
@@ -70,6 +73,7 @@ class ChassisController(Component):
         self.velocity, self.command_targets = velocity, (velocity,)
         self.motion_enabled = bool(motion_enabled)
         self.hz, self.max_linear, self.max_angular = hz, max_linear, max_angular
+        self.min_angular = min_angular
         self.linear_acceleration, self.angular_acceleration = linear_acceleration, angular_acceleration
         self.distance_tolerance, self.angle_tolerance = distance_tolerance, angle_tolerance
         self.pose_timeout, self.command_ttl, self.settle_samples = pose_timeout, command_ttl, settle_samples
@@ -140,10 +144,10 @@ class ChassisController(Component):
                 # be followed by a late nonzero command from the same tick.
                 await self._zero()
 
-    async def _send(self, command):
+    async def _send(self, command, *, ttl=None):
         self._sent = True
         async with asyncio.timeout(max(.5, self.command_ttl * 2)):
-            await self.velocity.set(command, ttl=self.command_ttl, _writer=self)
+            await self.velocity.set(command, ttl=self.command_ttl if ttl is None else ttl, _writer=self)
 
     async def _zero(self):
         async with self._command_lock:
@@ -159,6 +163,24 @@ class ChassisController(Component):
             if movement is not None and not movement.result.done():
                 movement.result.set_exception(MotionError("movement interrupted by stop()"))
 
+    async def drive(self, command, *, ttl=None):
+        """One manual velocity update; mutually exclusive with move/rotate."""
+        self._available()
+        if not isinstance(command, VelocityCommand):
+            raise TypeError('drive requires VelocityCommand')
+        if command != VelocityCommand() and not self.motion_enabled:
+            raise MotionError('nonzero movement requires motion_enabled=True')
+        if abs(command.linear_x)>self.max_linear or abs(command.angular_z)>self.max_angular:
+            raise MotionError('manual velocity exceeds configured controller limits')
+        async with self._command_lock:
+            if self._movement is not None:
+                raise MotionError('another movement is active')
+            if command != VelocityCommand():
+                frame = await self.pose.get(timeout=self.pose_timeout)
+                if time.time_ns()-frame.received_ns > self.pose_timeout*1e9:
+                    raise MotionError('pose feedback is stale')
+            await self._send(command, ttl=ttl)
+
     async def close(self):
         movement, self._movement = self._movement, None
         try:
@@ -169,8 +191,9 @@ class ChassisController(Component):
                 movement.result.set_exception(MotionError("controller closed"))
 
     @staticmethod
-    def _speed(error, maximum, acceleration, gain):
-        return math.copysign(min(maximum, gain * abs(error), math.sqrt(2 * acceleration * abs(error))), error)
+    def _speed(error, maximum, acceleration, gain, minimum=0.):
+        return math.copysign(min(maximum, max(minimum, gain * abs(error)),
+                                 math.sqrt(2 * acceleration * abs(error))), error)
 
     async def _tick(self):
         movement = self._movement
@@ -208,7 +231,7 @@ class ChassisController(Component):
                 error = movement.target - movement.angle
                 reached = abs(error) <= self.angle_tolerance
                 command = VelocityCommand(0., self._speed(error, self.max_angular,
-                                                          self.angular_acceleration, 2.))
+                                                          self.angular_acceleration, 2., self.min_angular))
             # A zero request is a stop probe, never a drift-correction movement.
             if movement.target == 0:
                 reached = True

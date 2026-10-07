@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Export RSIM_DDS_LOCAL_IP and RSIM_DDS_PEER_IP before starting Python.
+     This profile applies only to the control domain (42 by default).
+     Select the same domain explicitly in the RSim CLI. -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="${RSIM_DDS_DOMAIN:-42}">
+    <General>
+      <Interfaces>
+        <NetworkInterface address="${RSIM_DDS_LOCAL_IP:?Set RSIM_DDS_LOCAL_IP}" />
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+      <Transport>udp</Transport>
+      <MaxMessageSize>1200 B</MaxMessageSize>
+      <MaxRexmitMessageSize>1200 B</MaxRexmitMessageSize>
+      <FragmentSize>1025 B</FragmentSize>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>15</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer Address="${RSIM_DDS_PEER_IP:?Set RSIM_DDS_PEER_IP}" />
+      </Peers>
+      <SPDPInterval>1 s</SPDPInterval>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

@@ -11,7 +11,7 @@ from graphmap.pose import Pose
 from rsim import Component, ComponentError, Runtime, ProcessPlacement, VelocityCommand
 from rsim.components.motion import ChassisController, MotionError
 from rsim.components.odometry import PlanarEKF, PlanarOdometry, wrap_angle
-from examples.chassis_motion import SimulatedChassis, odom_message, imu_message
+from rsim.components.simulated_chassis import SimulatedChassis, odom_message, imu_message
 
 
 def test_ekf_reduces_noisy_pose_error_and_estimates_gyro_bias():
@@ -140,6 +140,46 @@ def test_disabled_motion_zero_requests_and_angle_validation():
             await control.rotate(yaw_rad=0, timeout=1)
         assert chassis.commands and all(command == VelocityCommand() for _, command in chassis.commands)
     asyncio.run(run())
+
+
+def test_rotation_with_actuator_deadband_still_finishes_and_stops():
+    class DeadbandChassis(SimulatedChassis):
+        async def _apply(self, envelope):
+            await super()._apply(envelope)
+            if abs(self.command.angular_z) < .045:
+                self.command = VelocityCommand(self.command.linear_x, 0.)
+
+    async def run(minimum):
+        chassis = DeadbandChassis(speedup=4, noise=False, gyro_bias=0)
+        control = ChassisController(pose=chassis.truth, velocity=chassis.velocity,
+            motion_enabled=True, hz=100, max_angular=.08, min_angular=minimum,
+            angular_acceleration=.15, angle_tolerance=math.radians(.7))
+        async with Runtime(control):
+            await control.pose.get(timeout=1)
+            if not minimum:
+                with pytest.raises(TimeoutError):
+                    await control.rotate(5, timeout=1.5)
+                assert math.degrees(chassis.state[2]) < 4.3
+            else:
+                for target in (5, -5):
+                    start = chassis.state[2]
+                    await control.rotate(target, timeout=2)
+                    assert abs(math.degrees(chassis.state[2]-start)-target) <= .7
+                    assert chassis.commands[-1][1] == VelocityCommand()
+                cursor = len(chassis.commands)
+                await control.rotate(0, timeout=1)
+                assert all(cmd == VelocityCommand() for _, cmd in chassis.commands[cursor:])
+            assert chassis.commands[-1][1] == VelocityCommand()
+        assert all(cmd.linear_x == 0 and abs(cmd.angular_z) <= .08 for _, cmd in chassis.commands)
+    asyncio.run(run(0.))
+    asyncio.run(run(.06))
+
+
+@pytest.mark.parametrize('minimum', [-.01, .09, float('nan'), float('inf')])
+def test_rotation_deadband_configuration_rejects_invalid_speed(minimum):
+    chassis = SimulatedChassis()
+    with pytest.raises(ValueError, match='min_angular'):
+        ChassisController(chassis, min_angular=minimum, max_angular=.08)
 
 
 def test_cancel_timeout_stop_concurrency_and_runtime_close_all_stop():

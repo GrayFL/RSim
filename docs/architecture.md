@@ -124,4 +124,4 @@ DDS 只序列化 JSON 描述信息，数组不经过 DDS payload 序列化；ROS
 - 优先用 Runtime placement 移动既有组件；ProcessSensor 仍支持旧单输出工厂及嵌套，SharedSensor 保留独立环境的共享源租约。
 - ROS1 兼容协议升级为 v2，主机与远端脚本必须一起更新；v1 缺少 deadline/epoch 校验会被拒绝握手。
 
-可运行的多输出、同图两种部署和模拟控制见 [components.py](../examples/components.py) 与 [Notebook](../examples/components.ipynb)。原需求说明保留在 [重构文档](重构文档.md)。
+可运行的多输出、同图两种部署和模拟控制见 [components.py](../examples/components/components.py) 与 [Notebook](../examples/components/components.ipynb)。原需求说明保留在 [重构文档](重构文档.md)。

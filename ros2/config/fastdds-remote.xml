@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Opt-in Fast DDS profile for remote ROS 2 visualization.
+     UDP buffers require rmem_max/wmem_max >= 4194304 on Linux.
+     SHM remains enabled for participants on the same host.
+     Topic QoS and discovery/interface selection are not overridden. -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>rsim_remote_udp</transport_id>
+      <type>UDPv4</type>
+      <maxMessageSize>1200</maxMessageSize>
+      <sendBufferSize>4194304</sendBufferSize>
+      <receiveBufferSize>4194304</receiveBufferSize>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>rsim_local_shm</transport_id>
+      <type>SHM</type>
+      <segment_size>67108864</segment_size>
+      <port_queue_capacity>8192</port_queue_capacity>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="rsim_remote" is_default_profile="true">
+    <rtps>
+      <useBuiltinTransports>false</useBuiltinTransports>
+      <userTransports>
+        <transport_id>rsim_local_shm</transport_id>
+        <transport_id>rsim_remote_udp</transport_id>
+      </userTransports>
+    </rtps>
+  </participant>
+</profiles>

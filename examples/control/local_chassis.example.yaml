@@ -1,0 +1,30 @@
+# Copy to a local configuration directory and fill in your serial identities.
+chassis:
+  port: /dev/serial/by-id/REPLACE_WITH_MOTOR_BOARD
+  namespace: /rsim/chassis
+  parameters:
+    baudrate: 921600
+    max_linear: 0.15
+    max_angular: 0.3
+    feedback_timeout: 0.2
+imu:
+  port: /dev/serial/by-id/REPLACE_WITH_IMU
+  baudrate: 468000
+  frame_id: hipnuc_imu
+  history: 2048
+calibration: ../assets/local-chassis/planar-imu.json
+control:
+  command_ttl: 0.2
+  pose_timeout: 0.3
+  max_linear: 0.1
+  max_angular: 0.15
+# Used only for stationary calibration. Normal control has no ROS1 dependency.
+reference:
+  connection:
+    host: REPLACE_WITH_REFERENCE_HOST
+  topic: /imu_data
+  body_imu:
+    wrd_frame: base_footprint
+    ego_frame: imu_frame
+    rotation: [0, 0, 0, 1]
+# Supply the actual known reference mounting rotation before calibration.

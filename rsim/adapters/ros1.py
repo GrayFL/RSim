@@ -334,9 +334,17 @@ class Chassis(Component):
             result = await self.bridge.publish_message(self.cmd_vel_topic, "geometry_msgs/Twist", {
                 "linear": {"x": value.linear_x, "y": 0.0, "z": 0.0},
                 "angular": {"x": 0.0, "y": 0.0, "z": value.angular_z}}, envelope=envelope)
-        except CommandRejected:
+        except CommandRejected as error:
             self._last_command = previous
-            raise
+            if (error.reason != "expired" or value != VelocityCommand() or previous is None
+                    or (envelope.controller_id, envelope.controller_epoch)
+                    != (previous.controller_id, previous.controller_epoch)):
+                raise
+            # A delayed zero must still stop our acknowledged session. The
+            # remote stop operation checks ownership and can only publish zero;
+            # it does not renew the expired velocity envelope or its lease.
+            result = await self.bridge._request("stop", topic=self.cmd_vel_topic,
+                controller_id=previous.controller_id, controller_epoch=previous.controller_epoch)
         await self.velocity_feedback.publish({"command": value, "ack": result},
                                               stamp_ns=time.monotonic_ns(), clock="host:monotonic")
         return result

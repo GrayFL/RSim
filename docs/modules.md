@@ -29,13 +29,17 @@ rsim/
 | `transport` | 描述信息收发、共享存储、命令请求应答、封闭数据 codec | 图放置策略、硬件驱动 |
 | `adapters` | 外部协议、采集资源、标准 ROS 消息转换 | 应用侧设备选择、EKF 等算法 |
 | `devices` | 不启动驱动的连接视图、设备身份与共享数据约定 | 导入 ROS / 串口驱动或打开物理设备 |
-| `drivers` | 参数解析后组合 adapter 与共享源，启动 provider | 算法计算与核心生命周期实现 |
+| `drivers` | 参数解析后组合 adapter、算法对象与共享源，启动 provider | 算法计算与核心生命周期实现 |
 | `components` | 对端口数据进行估计、控制、变换或生成 | 按具体设备类型分支调用底层驱动 |
 | `config` | 显式工厂选择、graphmap 外参、嵌套对象复用 | 动态执行 YAML 中的任意模块、打开设备 |
 
 `adapters.ros2` 是通用接入工具；D435 和 RobinW 的参数、topic 路由与源组件分别归 `drivers.realsense` 和 `drivers.seyond`。`devices` 与 `drivers` 的同名工厂分别用于连接和提供数据，延续已有使用方式。`components` 中的控制器接受 Signal / CommandSink，或具有这些端口的对象，不导入具体底盘适配器。
 
 `transport.backends.ros2` 处理本库的 DDS 描述信息；`adapters.ros2` 处理设备侧 ROS 消息。两者使用 ROS2 的目的不同，各自管理上下文，互不依赖。
+
+建图集成沿用这一划分：`drivers.mapping` 组装原生 Super-LIO / RTAB-Map，并将 `components.mapping/projection/synchronization` 的纯几何和索引对象注入适配器；`adapters.ros2.mapping_input/mapping_output/laser_mapping/scan_odometry/mapping_fusion` 处理时间、TF 与消息；`devices.mapping` 提供无 ROS 的多端口视图和 PLY 导出；`config.mapping` 读取组装配方。工厂依赖算法包是装配职责，适配器不反向导入算法实现。外部 SLAM 算法保留在原生子进程，详见 [建图工具链](mapping.md)。
+
+本机底盘的 `drivers.stm32` 组装 `adapters.ros2.stm32` 和原生 `ros2/rsim_stm32` 驱动，暴露 odom/state/velocity 端口；`components.imu_calibration` 在协议之外完成有限的平面 IMU 校正。位姿估计和动作控制仍由通用 `components.odometry/motion` 实现，见 [本机底盘](local-chassis.md)。
 
 ## 依赖方向
 
@@ -47,6 +51,7 @@ flowchart TD
     Config --> Devices[devices]
     Drivers --> Devices
     Drivers --> Adapters[adapters]
+    Drivers --> Components[components]
     Devices --> Runtime[runtime]
     Adapters --> Runtime
     Runtime --> Transport[transport]
@@ -118,3 +123,7 @@ ROS2 IMU 包的 `serial_node` 已指向新适配器入口；已有构建使用�
 分离稳定接口与具体实现参考了 [ROS 2 中间件接口设计](https://design.ros2.org/articles/ros_middleware_interface.html)；将基础库与集成层分开参考了 [Gazebo Sim 架构](https://gazebosim.org/docs/harmonic/architecture/)。这里采用其职责分离思路，保留 RSim 现有的协程组件模型，不引入 Gazebo 的 ECS 或插件实体。
 
 `tests/test_architecture.py` 检查包间导入方向、核心包隔离、可选依赖缺失时的公共入口及 CLI。现有运行时、跨进程、共享内存、父进程死亡清理、设备参数、串口与 ROS2 适配测试继续验证行为。包发现由 setuptools 递归处理，新增子包必须带 `__init__.py`；发布前应从构建后的 wheel 验证进程入口，防止源码工作区掩盖漏装模块。
+
+## 应用组装入口
+
+`rsim.apps` 组织 CLI 与 Notebook 的运行流程，可以组合 config、drivers、devices、adapters、components 和 runtime。它不作为底层模块的依赖。键盘来源在 adapters，车辆模拟与控制算法在 components，DDS 请求调度在 runtime；示例只调用这些公共实现。底盘远程入口见 [控制文档](control.md)。

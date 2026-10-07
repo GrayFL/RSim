@@ -103,10 +103,10 @@ async with Runtime(relay):
 
 镜像层转换 ROS1/ROS2 的 Header 和 time 字段差异，保留 frame_id、源时间戳、协方差和扫描值。传感器采用 sensor-data QoS（best effort），命令采用 reliable、volatile、depth=1。ROS2 消费者应选择兼容 QoS 和同一个 domain。
 
-可运行的 [命令行示例](../examples/chassis.py) 支持 `--host`、重复的 `--setup`、topic 映射、`--ros2 PREFIX`、`--serve` 和 `--stop-test`。默认仅采集；`--stop-test` 明确发送一次全零 Twist：
+可运行的 [命令行示例](../examples/ros1/chassis.py) 支持 `--host`、重复的 `--setup`、topic 映射、`--ros2 PREFIX`、`--serve` 和 `--stop-test`。默认仅采集；`--stop-test` 明确发送一次全零 Twist：
 
 ```bash
-python -m examples.chassis --host "$ROBOT_HOST" \
+python -m examples.ros1.chassis --host "$ROBOT_HOST" \
   --remote-script "$REMOTE_AGENT" --python "$REMOTE_PYTHON" \
   --setup "$ROS_SETUP" --setup "$WORKSPACE_SETUP" \
   --ros-ip "$ROBOT_IP" --odom "$ODOM_TOPIC" --cmd-vel "$CMD_VEL_TOPIC" \
@@ -120,6 +120,8 @@ python -m examples.chassis --host "$ROBOT_HOST" \
 退出 Runtime 会关闭 SSH 标准输入，使远端取消订阅并释放其发布者。主进程异常退出时，本机 SSH 子进程受 parent-death 保护；远端还有 10 秒心跳期限。ROS master 不可用时，启动阶段有 15 秒期限，客户端提前离开也会退出。连接故障会传播到等待中的请求和 `get()`，不会无限返回旧帧；重新进入 Runtime 建立新会话，不自动重放控制消息。Chassis 打开时注册速度 publisher，但不发送速度；命令时限涵盖排队和传输，过期拒绝不会关闭健康的 SSH 会话。
 
 速度使用 `await chassis.velocity.set(VelocityCommand(linear_x, angular_z), ttl=.25)`，分别为前向 m/s、绕 z 轴 rad/s；默认均为零。兼容快捷方法 set_velocity / stop 也经过该 sink。v2 命令携带 controller_id、epoch、sequence、deadline，主机保守转换 monotonic 时钟域，远端在实际发布前检查过期、倒序、重放和独占会话，并限制最大 0.5 秒 TTL。远端线程在期限到达或会话结束时发送零速；持续控制必须刷新，软件零速不等于电机制动确认。多个 RSim SSH 会话还使用底盘本机的协作锁保护同一命令 topic。
+
+若全零命令被远端判定过期，且当前控制会话此前已有命令获确认，适配器会请求停止该会话。远端仍校验控制权，此操作只停止，不续期或重放过期命令；尚未取得控制权、控制权已变更或非零命令被拒绝时仍报错。
 
 ROS2 镜像默认通过一个 Connect 占有底盘 velocity；其他控制源需使用 `ChassisROS2(..., forward_commands=False)`，将 relay.velocity_command 与其他 Signals 一起接入 CommandMux。直接在已被 Connect 占有的 sink 调用 stop/set 会被拒绝；需要通过仲裁后的来源发送零值。镜像只接受平面 linear.x / angular.z，其他非零分量报错。
 

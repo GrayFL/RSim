@@ -1,0 +1,13 @@
+# Same host only: Linux CLOCK_MONOTONIC, not ROS time or wall time.
+string controller_id
+string controller_epoch
+uint64 sequence
+int64 deadline_ns
+float64 linear_x
+float64 angular_z
+---
+bool accepted
+string reason
+# Host serial write completed; not a motor execution acknowledgement.
+int64 transmitted_ns
+uint64 transmit_sequence

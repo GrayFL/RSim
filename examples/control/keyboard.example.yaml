@@ -1,0 +1,16 @@
+# WASD vehicle simulation, SI units except explicitly named degrees.
+vehicle:
+  acceleration: 0.22
+  friction: 0.06
+  drag: 16.0
+  angular_acceleration: 0.5
+  angular_friction: 0.12
+  angular_drag: 16.8888888889
+  wheelbase: 0.45
+  steering_max_deg: 35.0
+  steering_speed_scale: 0.12
+  pivot_rate: 0.15
+  pivot_transition_speed: 0.035
+  hz: 30.0
+  command_ttl: 0.25
+  max_loop_gap: 0.2

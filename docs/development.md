@@ -48,12 +48,13 @@ plt.close(fig)
 ```python
 from pathlib import Path
 
-project_root = Path(__file__).resolve().parents[1]
+project_root = next(p for p in Path(__file__).resolve().parents
+                    if (p / 'pyproject.toml').is_file() and (p / 'rsim').is_dir())
 assets = project_root / "assets"
 assets.mkdir(parents=True, exist_ok=True)
 ```
 
-Notebook 没有 `__file__`，应根据实际工作目录设置 `NOTEBOOK_ASSETS_ROOT`。例如，kernel 的工作目录为 `examples/` 时使用 `../assets`；在项目根目录时使用 `assets`。设置环境变量只影响使用它的显示工具，其他写文件操作仍需显式使用同一个资产目录。
+Notebook 没有 `__file__`，从当前工作目录向上找到同时包含 `pyproject.toml` 和 `rsim/` 的项目根，再将 `NOTEBOOK_ASSETS_ROOT` 设置为该目录下 `assets/` 的绝对路径。不要依赖示例的固定目录层数。设置环境变量只影响使用它的显示工具，其他写文件操作仍需显式使用同一个资产目录。
 
 ## 验证与记录
 

@@ -88,6 +88,10 @@ HiPNUC IMU 支持 Python 串口直读与 ROS2 节点两种模式，均通过 `.i
 
 `PlanarOdometry` 融合轮式 odom 与 IMU 角速度，输出 `graphmap.pose.Pose`；`ChassisController` 提供 `await move(distance_m)`、`await rotate(yaw_deg=... / yaw_rad=...)` 和 `await stop()`。运动默认关闭，详见 [位姿融合与底盘控制](docs/motion.md)。
 
+电机板直连本机时，`rsim.drivers.STM32` 提供原生 ROS2 串口驱动和相同的 RSim 端口，可与外置 IMU 组装为独立的本机控制链路。见 [本机底盘与初步 IMU 校正](docs/local-chassis.md) 和 [Notebook](examples/control/local_chassis.ipynb)。
+
+`load_mapper()` 组装 Super-LIO 与 RTAB-Map：3D 雷达和底盘 IMU 构建激光几何，D435 RGB 投影上色，独立 EKF 可融合轮速、底盘陀螺和二维扫描里程计，RTAB-Map 通过视觉/激光配准及回环优化关键帧位姿。`await mapper.pose.get()` 读取 graphmap 位姿，`.rgb_map.get()` 读取彩色点云，`.map.get()` 提供带稳定来源编号的地图。`GraphMap` 将它转换为 InfoPoints / IndexDB，并在回环后重新关联体素和来源特征。接口、配置与同步边界见 [多传感器建图](docs/mapping.md)。
+
 ## 控制与仲裁
 
 ```python
@@ -117,19 +121,22 @@ async with Runtime(drive):
 
 ## 示例与验证
 
-- [IMU 与配置组装 Notebook](examples/imu_rig.ipynb)：Python/ROS2 两种采集方式、固定外参、共享的嵌套组合。
-- [底盘控制 Notebook](examples/chassis_motion.ipynb)：EKF 位姿、异步前进/后退/旋转；默认内存模拟，实机部分只发零速。
-- [Component / Signal Notebook](examples/components.ipynb)：多输出、fan-out、进程部署、模拟控制与手动覆盖，无需硬件。
-- [D435 Notebook](examples/d435.ipynb)：彩色与深度、历史回查、图像和采集资产。
-- [无 ROS 客户端 Notebook](examples/dds_client.ipynb)：连接另一解释器已启动的相机。
-- [原型实验 Notebook](examples/prototype.ipynb)：保留已有嵌套进程和硬件实验。
+- [RGB 建图 Notebook](examples/mapping/mapping.ipynb)：激光几何与 RGB 上色、位姿、来源特征和 graphmap 导出。
+- [IMU 与配置组装 Notebook](examples/imu/imu_rig.ipynb)：Python/ROS2 两种采集方式、固定外参、共享的嵌套组合。
+- [底盘控制 Notebook](examples/control/chassis_motion.ipynb)：EKF 位姿、异步前进/后退/旋转；默认内存模拟，实机部分只发零速。
+- [Component / Signal Notebook](examples/components/components.ipynb)：多输出、fan-out、进程部署、模拟控制与手动覆盖，无需硬件。
+- [D435 Notebook](examples/camera/d435.ipynb)：彩色与深度、历史回查、图像和采集资产。
+- [无 ROS 客户端 Notebook](examples/camera/dds_client.ipynb)：连接另一解释器已启动的相机。
+- [原型实验 Notebook](examples/prototype/prototype.ipynb)：保留已有嵌套进程和硬件实验。
 
 ```bash
-python -m examples.components             # 子进程计算，内存模拟执行器
-python -m examples.components --local     # 同一张图在当前循环运行
-python -m examples.chassis --help         # 远端配置、ROS2 镜像、零速测试
+python -m examples.components.components             # 子进程计算，内存模拟执行器
+python -m examples.components.components --local     # 同一张图在当前循环运行
+python -m examples.ros1.chassis --help         # 远端配置、ROS2 镜像、零速测试
 mkdir -p assets
 python -m pytest -q --junitxml=assets/tests.xml
 ```
 
 绘图使用 `scipykit.mtp_initializer`，生成图像、报告和日志放在根目录 `assets/`。本地环境及开发记录仅写入不提交 Git 的 `PROJECT.md`；通用约定见 [开发说明](docs/development.md)。
+
+键盘及跨环境指令控制见 [解耦控制接口](docs/control.md)，跨机器 DDS 与 WSL 配置见 [远程控制](docs/remote-control.md)，示例按主题整理在 [examples 索引](examples/README.md)。服务由 `rsim.drivers.Chassis` 提供，无 ROS 客户端使用 `rsim.devices.Chassis`。

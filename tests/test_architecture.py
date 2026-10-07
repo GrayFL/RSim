@@ -13,9 +13,10 @@ ALLOWED = {
     "runtime": {"core", "transport", "runtime"},
     "adapters": {"core", "runtime", "adapters"},
     "devices": {"core", "runtime", "devices"},
-    "drivers": {"core", "runtime", "transport", "adapters", "devices", "drivers"},
+    "drivers": {"core", "runtime", "transport", "adapters", "devices", "drivers", "components"},
     "components": {"core", "transport", "components"},
     "config": {"core", "devices", "drivers", "config"},
+    "apps": {"core", "runtime", "transport", "adapters", "devices", "drivers", "components", "config", "apps"},
 }
 
 

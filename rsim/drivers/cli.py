@@ -1,7 +1,7 @@
 """Provider CLI and async lease serving."""
 import asyncio
 from pathlib import Path
-from . import D435, RobinW, Camera, Hipnuc
+from . import D435, RobinW, Camera, Hipnuc, STM32
 
 async def serve(sensor):
     """Hold a provider lease until cancelled; suitable for create_task in notebooks."""
@@ -22,11 +22,11 @@ def _parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Start a shared ROS hardware provider",
         epilog="Append --ros-args -p NAME:=VALUE --params-file FILE -r FROM:=TO "
-        "to pass native ROS options to d435/robin."
+        "to pass native ROS options to d435/robin/imu/stm32."
         )
-    parser.add_argument("device", choices=("d435", "robin", "camera", "imu"))
-    parser.add_argument("--port", help="IMU serial port; automatic only with one CP210x")
-    parser.add_argument("--baudrate", type=int, default=115200)
+    parser.add_argument("device", choices=("d435", "robin", "camera", "imu", "stm32"))
+    parser.add_argument("--port", help="Serial port; required for STM32, IMU can discover one CP210x")
+    parser.add_argument("--baudrate", type=int, help="Serial baud; omitted uses the device factory default")
     parser.add_argument("--imu-mode", choices=("serial", "ros2"), default="serial")
     parser.add_argument("--frame-id", default="hipnuc_imu")
     parser.add_argument("--serial", default="")
@@ -82,8 +82,12 @@ def _sensor_from_args(args):
             **common
             )
     elif args.device == "imu":
-        return Hipnuc(args.port, mode=args.imu_mode, baudrate=args.baudrate,
+        baud = {} if args.baudrate is None else {'baudrate': args.baudrate}
+        return Hipnuc(args.port, mode=args.imu_mode, **baud,
                       frame_id=args.frame_id, ros_args=args.ros_args, log_path=args.log_path, **common)
+    elif args.device == "stm32":
+        return STM32(args.port, history=args.history, ros_args=args.ros_args, log_path=args.log_path,
+                     parameters={} if args.baudrate is None else {'baudrate': args.baudrate})
     else:
         return Camera(args.camera_device, **common)
 
