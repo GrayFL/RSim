@@ -3,7 +3,7 @@
      This profile applies only to the control domain (42 by default).
      Select the same domain explicitly in the RSim CLI. -->
 <CycloneDDS xmlns="https://cdds.io/config">
-  <Domain Id="${RSIM_DDS_DOMAIN:-42}">
+  <Domain Id="${RSIM_DDS_DOMAIN:-0}">
     <General>
       <Interfaces>
         <NetworkInterface address="${RSIM_DDS_LOCAL_IP:?Set RSIM_DDS_LOCAL_IP}" />

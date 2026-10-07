@@ -82,7 +82,23 @@ CLI 默认 `--input auto`：SSH 会话优先使用终端输入，即使设置了
 python -m rsim.apps.keyboard_control --input terminal
 # 在键盘所在的桌面会话运行
 python -m rsim.apps.keyboard_control --input pynput
+# 独立控制窗口，适合 WSLg 或 SSH X 转发
+python -m rsim.apps.keyboard_control --input pygame --dry-run
 ```
+
+### pygame 窗口
+
+`--input pygame` 打开一个小窗口，接收真实按下/松开和组合键，不需要 xterm 或全局键盘监听。面板显示 WASD 高亮、连接状态、模型线/角速度、虚拟转向、服务端 Pose，以及 `ZERO OUTPUT` / `LIVE OUTPUT`。速度条是模型指令，不是实测轮速；`--dry-run` 中模型会变化，发给服务的速度始终为零。
+
+窗口获得焦点后按 WASD；空格立即制动，Esc 或关闭窗口退出。失焦、最小化会清空按键并制动，重新聚焦不会恢复此前按住的方向，须松开后重新按键。制动后同样不会因仍按住方向键而自动恢复。窗口使用 [pygame 窗口与键盘事件](https://www.pygame.org/docs/ref/event.html)，无需捕获其他应用中的按键。
+
+字体默认 `Inconsolata,Sarasa Mono SC`，按顺序逐字回退，不使用字体图标；字体需要安装在 **运行 Python 的一端**。可用 `--font "字体一,字体二"` 更改顺序。都不可用时回退 pygame 默认字体，但该字体未必包含中文。`--window-hz` 默认20，范围1–60；X转发可选10以降低绘制频率。只更新变化区域，未初始化音频设备。
+
+GUI 在独立子进程的主线程运行，通过有界非阻塞通道传递按键与显示数据；控制协程和 DDS 留在父进程。GUI 卡住、退出或输入超过 `max_loop_gap` 没有更新时，控制失败关闭，现有命令期限仍生效。窗口可以在 DDS 连接等待期间关闭；正常退出回收子进程并释放自己的控制会话。GUI 依赖属于 `rsim[teleop]`，也可在已有控制环境内单独安装 `pygame>=2.5`。从函数调用时使用 [PygameKeyboard](../rsim/adapters/pygame_keyboard.py) 与现有 `Teleoperation` 组装，脚本入口需放在 `if __name__ == "__main__":` 下，以支持 spawn。
+
+WSLg 本地启动和 SSH X 转发命令见 [远程控制](remote-control.md#wsl-和键盘)。Notebook 原有面板继续使用 pynput；独立 pygame 窗口请使用 CLI。
+
+### 终端与 pynput
 
 终端模式关闭字符回显和行缓冲，不需回车，状态行显示 `keys`、`v`、`yaw` 和输出模式。退出或异常清理时恢复终端设置；输入断开时制动并退出。还可按 Q 退出。如果 SSH 没有分配交互终端，使用 `ssh -t`。
 
