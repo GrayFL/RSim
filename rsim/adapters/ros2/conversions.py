@@ -70,3 +70,39 @@ def imu_data(msg):
         data[name] = {axis: float(getattr(getattr(msg, name), axis)) for axis in axes}
         data[name + "_covariance"] = list(getattr(msg, name + "_covariance"))
     return data
+
+
+def scan_data(msg):
+    """Preserve nonfinite ranges and intensities in a ROS-free scan value."""
+    return {
+        "header": {"frame_id": msg.header.frame_id},
+        "angle_min": float(msg.angle_min),
+        "angle_max": float(msg.angle_max),
+        "angle_increment": float(msg.angle_increment),
+        "time_increment": float(msg.time_increment),
+        "scan_time": float(msg.scan_time),
+        "range_min": float(msg.range_min),
+        "range_max": float(msg.range_max),
+        "ranges": np.asarray(msg.ranges, dtype=np.float32),
+        "intensities": np.asarray(msg.intensities, dtype=np.float32),
+    }
+
+
+def odom_data(msg):
+    from rosidl_runtime_py.convert import message_to_ordereddict
+    return message_to_ordereddict(msg)
+
+
+def diagnostics_data(msg):
+    return {
+        "statuses": [
+            {
+                "name": item.name,
+                "level": item.level[0] if isinstance(item.level, bytes) else int(item.level),
+                "message": item.message,
+                "hardware_id": item.hardware_id,
+                "values": {value.key: value.value for value in item.values},
+            }
+            for item in msg.status
+        ]
+    }

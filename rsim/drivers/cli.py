@@ -1,7 +1,7 @@
 """Provider CLI and async lease serving."""
 import asyncio
 from pathlib import Path
-from . import D435, RobinW, Camera, Hipnuc, STM32
+from . import D435, RobinW, Camera, Hipnuc, STM32, ROS2Topic, BlueSea
 
 async def serve(sensor):
     """Hold a provider lease until cancelled; suitable for create_task in notebooks."""
@@ -25,10 +25,13 @@ def _parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Start a shared ROS hardware provider",
         epilog="Append --ros-args -p NAME:=VALUE --params-file FILE -r FROM:=TO "
-        "to pass native ROS options to d435/robin/imu/stm32."
+        "to pass native ROS options to d435/robin/imu/stm32/bluesea."
         )
-    parser.add_argument("device", choices=("d435", "robin", "camera", "imu", "stm32"))
-    parser.add_argument("--port", help="Serial port; required for STM32, IMU can discover one CP210x")
+    parser.add_argument("device", choices=("d435", "robin", "camera", "imu", "stm32", "ros-topic", "bluesea"))
+    parser.add_argument("--port", help="Serial port; required for STM32 and BlueSea, IMU can discover one CP210x")
+    parser.add_argument("--topic", help="Absolute ROS 2 topic for ros-topic relay or BlueSea scan")
+    parser.add_argument("--kind", choices=("imu", "scan", "odom", "state"),
+                        help="ROS 2 message kind for ros-topic relay")
     parser.add_argument("--baudrate", type=int, help="Serial baud; omitted uses the device factory default")
     parser.add_argument("--imu-mode", choices=("serial", "ros2"), default="serial")
     parser.add_argument("--frame-id", default="hipnuc_imu")
@@ -53,6 +56,13 @@ def _parse_args(argv=None):
         parser.error(
             "camera uses OpenCV/UVC, not a native ROS driver; --ros-args is unsupported"
             )
+    if args.device == "ros-topic":
+        if not args.topic or not args.kind:
+            parser.error("ros-topic requires --topic and --kind")
+        if ros_args:
+            parser.error("ros-topic subscribes to an existing topic; --ros-args is unsupported")
+    if args.device == "bluesea" and not args.port:
+        parser.error("bluesea requires --port")
     args.ros_args = ros_args
     return args
 
@@ -91,6 +101,11 @@ def _sensor_from_args(args):
     elif args.device == "stm32":
         return STM32(args.port, history=args.history, ros_args=args.ros_args, log_path=args.log_path,
                      parameters={} if args.baudrate is None else {'baudrate': args.baudrate})
+    elif args.device == "ros-topic":
+        return ROS2Topic(args.topic, args.kind, **common)
+    elif args.device == "bluesea":
+        return BlueSea(args.port, topic=args.topic or "/rsim/chassis/scan_raw",
+                       ros_args=args.ros_args, log_path=args.log_path, **common)
     else:
         return Camera(args.camera_device, **common)
 

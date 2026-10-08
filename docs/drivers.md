@@ -85,3 +85,57 @@ python -m rsim.drivers d435 \
 此入口直接启动原生节点，相当于 `ros2 run` 的节点选项，不执行厂商 launch 文件。只属于 launch 的开关（如 RealSense 的 `camera_namespace`）需用相应节点选项表达（`-r __ns:=...`）。原生参数可启用额外 ROS 输出，但不会自动增加新的 RSim 数据模型：D435 当前返回 color/depth Image，RobinW 返回 PointCloud。改变输出模式或改用厂商多设备配置文件时，应使用低层 `Driver` + `RosSensor` 显式配置订阅与组合。
 
 通用 `rsim.adapters.ros2.Driver(package, executable, parameters, key=..., ros_args=..., remappings=...)` 也提供同样的参数编码与 argv 通道，适合自定义原生节点。`Camera` 当前通过 OpenCV/UVC 采集，没有原生 ROS 驱动启动参数；CLI 对其 `--ros-args` 明确报错。
+
+## 底盘串口传感器与跨主机读取
+
+`rsim.drivers.Hipnuc` 使用项目的 `rsim_hipnuc` ROS 2 包，`rsim.drivers.STM32` 使用 `rsim_stm32` 包；二者都应先在 ROS 工作区构建。`rsim.drivers.BlueSea` 启动外部 `bluesea2` 包的原生节点，源码来自 [BlueSeaLidar 的 ROS 2 仓库](https://github.com/BlueSeaLidar/bluesea-ros2)，RSim 不内置该源码。在工作区 `src/` 准备这四个包后，可以执行 `colcon build --packages-select rsim_stm32 rsim_hipnuc base bluesea2`，再 source 工作区的 `install/setup.bash`。BlueSea 默认使用 UART、500000 波特率、3 字节原始点、整圈 `LaserScan`、`laser_frame` 和倒置角度设置；可用 `parameters` 或 `--ros-args` 覆盖。串口路径建议使用 `/dev/serial/by-id/` 下的稳定名称。
+
+在连接设备的主机上分别运行 provider（下列端口变量由现场配置）：
+
+```bash
+python -m rsim.drivers stm32 --port "$STM32_PORT" \
+  --log-path assets/stm32-native.log
+
+python -m rsim.drivers imu --port "$IMU_PORT" --baudrate 115200 \
+  --imu-mode ros2 --frame-id imu_frame --backend ros2 \
+  --ros-args -r imu/data:=/rsim/chassis/imu/data
+
+python -m rsim.drivers bluesea --port "$BLUESEA_PORT" \
+  --topic /rsim/chassis/scan_raw --backend ros2 \
+  --log-path assets/bluesea-native.log
+```
+
+`STM32` 默认禁用运动输出；启用电机是另一项显式配置。上面的三个命令都持续运行，使用服务管理器启动时应提供可写的 `HOME` 和 `ROS_LOG_DIR`。先用 `ros2 topic echo --once` 确认 IMU、扫描、里程计和诊断话题收到新数据。
+
+`SharedSensor` 的发现和共享内存仅在同一主机可用。跨主机时，在应用所在主机上为需要的话题各启动一个 `ros-topic` 中继；它订阅原生 ROS 2 话题，并在本机提供连接型共享源。两端需使用相同 ROS domain 和可互通的 ROS 2 DDS 配置。下例的本机描述信息使用 Cyclone DDS；应用环境只需安装本机 DDS 后端，不需安装 ROS Python 包。
+
+```bash
+python -m rsim.drivers ros-topic --topic /rsim/chassis/imu/data --kind imu --backend cyclonedds
+python -m rsim.drivers ros-topic --topic /rsim/chassis/scan_raw --kind scan --backend cyclonedds
+python -m rsim.drivers ros-topic --topic /rsim/chassis/odom --kind odom --backend cyclonedds
+python -m rsim.drivers ros-topic --topic /rsim/chassis/diagnostics --kind state --backend cyclonedds
+```
+
+应用进程只导入 `rsim.devices`，连接同一主机上已经启动的中继；返回的数据无需 ROS 消息类型：
+
+```python
+import asyncio
+from rsim import Runtime
+from rsim.devices import ROS2Topic
+from rsim.transport.descriptor import TransportConfig
+
+async def main():
+    source = ROS2Topic(
+        "/rsim/chassis/scan_raw", "scan",
+        transport=TransportConfig("cyclonedds", 0),
+    )
+    async with Runtime(source):
+        frame = await source.scan.get(timeout=10)
+        print(frame.data["header"]["frame_id"], frame.data["ranges"].shape)
+
+asyncio.run(main())
+```
+
+`kind` 可选 `imu`、`scan`、`odom`、`state`。扫描距离和强度是 `float32` NumPy 数组，保留无效距离的 `Inf`；里程计是嵌套字典；诊断的 `level` 是整数。每个 `Frame` 保留 ROS 源时间戳、时间域和接收时间。`rsim.devices.BlueSea(port)` 则用于与 BlueSea provider **同机**的连接，跨主机使用上面的扫描话题中继。
+
+上例的扫描是雷达原始 `LaserScan`。若应用需要屏蔽车体结构造成的固定角区，应在消费原始扫描前显式配置扫描过滤；此 provider 不会自动应用旧 ROS1 的滤波器配置。

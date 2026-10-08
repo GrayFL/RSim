@@ -2,7 +2,10 @@ from collections import deque
 import time
 from rsim.core import PrimaryComponent
 from .context import RosContext
-from .conversions import pointcloud_array, image_array, imu_data
+from .conversions import (
+    pointcloud_array, image_array, imu_data, scan_data, odom_data,
+    diagnostics_data,
+)
 
 class RosSensor(PrimaryComponent):
 
@@ -30,7 +33,9 @@ class RosSensor(PrimaryComponent):
             )
 
     async def open(self):
-        from sensor_msgs.msg import Image as RosImage, PointCloud2, Imu
+        from sensor_msgs.msg import Image as RosImage, PointCloud2, Imu, LaserScan
+        from nav_msgs.msg import Odometry
+        from diagnostic_msgs.msg import DiagnosticArray
         from rclpy.qos import qos_profile_sensor_data
         self.pending.clear()
 
@@ -40,7 +45,9 @@ class RosSensor(PrimaryComponent):
             self.pending.append((msg, time.time_ns()))
 
         self.subscription = self.children[0].node.create_subscription(
-            {"points": PointCloud2, "image": RosImage, "imu": Imu}[self.kind],
+            {"points": PointCloud2, "image": RosImage, "imu": Imu,
+             "scan": LaserScan, "odom": Odometry,
+             "state": DiagnosticArray}[self.kind],
             self.topic,
             receive,
             qos_profile_sensor_data
@@ -51,7 +58,9 @@ class RosSensor(PrimaryComponent):
         if not self.pending:
             return
         msg, received_ns = self.pending.popleft()
-        data = {"points": pointcloud_array, "image": image_array, "imu": imu_data}[self.kind](msg)
+        data = {"points": pointcloud_array, "image": image_array,
+                "imu": imu_data, "scan": scan_data, "odom": odom_data,
+                "state": diagnostics_data}[self.kind](msg)
         await self.publish(
             data,
             stamp_ns=msg.header.stamp.sec * 10**9
