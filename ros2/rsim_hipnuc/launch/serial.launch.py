@@ -8,7 +8,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     defaults = {
         "port": "",
-        "baudrate": "468000",
+        "baudrate": "115200",
         "frame_id": "hipnuc_imu",
         "topic": "/imu/data"
         }

@@ -14,9 +14,9 @@ async def run(args):
 
     robot = None
     if not args.simulate:
-        from rsim.config.local_chassis import load_local_chassis
+        from rsim.config import load_chassis
 
-        robot = load_local_chassis(args.config, motion_enabled=args.enable_motion)
+        robot = load_chassis(args.config, motion_enabled=args.enable_motion)
     service = Chassis(
         robot,
         name=args.name,
@@ -46,7 +46,7 @@ async def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--config", help="local chassis YAML (hardware and calibration)")
+    group.add_argument("--config", help="native chassis or legacy local-calibration YAML")
     group.add_argument("--simulate", action="store_true")
     parser.add_argument("--enable-motion", action="store_true")
     parser.add_argument("--blas-threads", type=int, default=1)

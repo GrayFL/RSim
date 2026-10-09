@@ -7,7 +7,7 @@ def Hipnuc(
         port=None,
         *,
         mode="serial",
-        baudrate=468000,  # 115200,
+        baudrate=115200,
         frame_id="hipnuc_imu",
         navigation_frame="device_navigation",
         history=128,

@@ -9,8 +9,21 @@ def Chassis(
     motion_enabled=None,
     transport=None,
     control=None,
+    pose=None,
+    velocity=None,
+    state=None,
 ):
     from rsim.adapters.control_service import MotionService
+    from rsim.components.motion import ChassisController
+
+    if pose is not None or velocity is not None:
+        if robot is not None or simulate:
+            raise ValueError('pass pose/velocity ports, a robot, or simulate=True')
+        controller = ChassisController(pose=pose, velocity=velocity,
+            motion_enabled=bool(motion_enabled), **(control or {}))
+        return MotionService(controller, name=name, state=state, transport=transport)
+    if state is not None:
+        raise ValueError('state is only used with explicit pose/velocity ports')
 
     if simulate:
         if robot is not None:
@@ -32,6 +45,10 @@ def Chassis(
         and bool(motion_enabled) != robot.control.motion_enabled
     ):
         raise ValueError("motion_enabled must match the supplied robot controller")
-    return MotionService(
+    service = MotionService(
         robot.control, name=name, state=robot.chassis.state, transport=transport
     )
+    scan = getattr(robot, 'scan', None)
+    if scan is not None:
+        service.dependencies += (scan.producer,)
+    return service

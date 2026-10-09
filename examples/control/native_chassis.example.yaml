@@ -1,0 +1,59 @@
+# Copy into configs/, then replace device paths and measured sensor mounts.
+chassis:
+  directory: ../assets/chassis-odometry
+  estimator: wheel_imu  # scan_imu adds RTAB 2D ICP
+  stm32:
+    namespace: /rsim/chassis
+    start_driver: false  # true starts the native driver; requires port
+    # port: /dev/serial/by-id/your-motor-controller
+  imu:
+    topic: /rsim/chassis/imu/data
+    start_driver: false
+    # port: /dev/serial/by-id/your-imu
+    parameters:
+      baudrate: 115200
+  imu_mount:
+    wrd_frame: base_footprint
+    ego_frame: imu_frame
+    position: [0, 0, 0]  # replace with measured installation
+    rotation: [0, 0, 0, 1]  # graphmap xyzw quaternion
+  scan:
+    topic: /rsim/chassis/scan_raw
+    start_driver: false
+    # port: /dev/serial/by-id/your-lidar
+    # Optional measured body occlusion sectors, in LaserScan-frame radians.
+    # These four-post example angles must match the actual chassis.
+    # filter:
+    #   topic: /rsim/chassis/scan
+    #   angle_masks: [[-2.34, -1.95], [-1.1, -0.75], [0.75, 1.1], [1.95, 2.34]]
+  scan_mount:
+    wrd_frame: base_footprint
+    ego_frame: laser_frame
+    position: [0, 0, 0]  # replace with measured installation
+    rotation: [0, 0, 0, 1]
+  odometry:
+    prefix: /rsim/chassis_odometry
+    world_frame: odom_fused
+    input_timeout: 0.3
+    use_orientation: true
+    use_acceleration: true
+    lateral_acceleration: false
+    imu_options:
+      gravity: 9.8  # match the driver's acceleration scaling
+      gyro_bias: [0, 0, 0]
+      acceleration_bias: [0, 0, 0]
+      orientation_std: 0.07
+      gyro_std: 0.02
+      acceleration_std: 0.3
+    parameters:
+      frequency: 50.0
+      smooth_lagged_data: true
+      history_length: 3.0
+    scan_parameters:
+      Icp/MaxCorrespondenceDistance: '0.2'
+      Icp/VoxelSize: '0.03'
+  control:
+    command_ttl: 0.2
+    pose_timeout: 0.3
+    max_linear: 0.1
+    max_angular: 0.2

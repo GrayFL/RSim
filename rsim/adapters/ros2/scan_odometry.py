@@ -25,7 +25,8 @@ class ScanOdometry(Component):
     Output is prefix/scan2d/odom in the base frame. The private TF tree avoids
     claiming ownership of the application's global odometry transform.
     """
-    def __init__(self, ros, *, prefix, mount, directory, parameters=None):
+    def __init__(self, ros, *, prefix, mount, directory, parameters=None,
+                 wheel_topic=None, scan_topic=None, odom_frame=None):
         from graphmap.pose import Pose
         import yaml
         self.ros, self.prefix = ros, prefix
@@ -35,7 +36,9 @@ class ScanOdometry(Component):
             raise ValueError('scan mount must be SE(3), base_footprint -> scan frame')
         self.local = prefix + '/scan2d'
         self.guess_frame = prefix.strip('/').replace('/', '_') + '_wheel_guess'
-        self.odom_frame = prefix.strip('/').replace('/', '_') + '_scan_odom'
+        self.odom_frame = odom_frame or prefix.strip('/').replace('/', '_') + '_scan_odom'
+        self.wheel_topic = wheel_topic or prefix+'/wheel_odom'
+        self.scan_topic = scan_topic or prefix+'/scan'
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         config = {'Reg/Force3DoF': 'true', 'Icp/PointToPlane': 'true',
@@ -58,13 +61,18 @@ class ScanOdometry(Component):
             ros_args=['--params-file', str(parameter_file)], log_path=directory/'scan2d.log',
             remappings={'__ns': self.local, 'scan': self.local+'/scan',
                         '/tf': self.local+'/tf', '/tf_static': self.local+'/tf_static'})
-        super().__init__(ros, self.driver)
+        from .sensor import RosSensor
+        self.reader = RosSensor(self.local+'/odom', 'odom', ros=ros,
+                                clock='ros:system', history=512, hz=200)
+        super().__init__(ros, self.driver, self.reader)
+        self.expose('odometry', self.reader.odom)
         self.pending = deque()
         self.wheel_times = deque(maxlen=1000)
         self.last_scan = -1
         self.counts = dict(forwarded=0, uncovered=0, overflow=0, invalid=0, odometry=0)
         self.subscriptions, self.publishers = [], []
         self.wheel_frame = None
+        self.wheel_origin = None
         self.last_output = None
         self.last_output_stamp = -1
         self.latest_pose = None
@@ -74,7 +82,13 @@ class ScanOdometry(Component):
         from sensor_msgs.msg import LaserScan
         from tf2_msgs.msg import TFMessage
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+        self.ros = self.dependencies[0]
         node = self.ros.node
+        self.pending.clear()
+        self.wheel_times.clear()
+        self.wheel_frame = self.wheel_origin = self.latest_pose = None
+        self.last_scan = self.last_output_stamp = -1
+        self.counts = dict.fromkeys(self.counts, 0)
         self.tf = node.create_publisher(TFMessage, self.local+'/tf', QoSProfile(depth=100))
         self.static = node.create_publisher(TFMessage, self.local+'/tf_static',
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -82,8 +96,8 @@ class ScanOdometry(Component):
         self.publishers = [self.tf, self.static, self.scan]
         self.static.publish(TFMessage(transforms=[pose_transform(self.mount)]))
         qos = QoSProfile(depth=100, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.subscriptions = [node.create_subscription(Odometry, self.prefix+'/wheel_odom', self.wheel, qos),
-            node.create_subscription(LaserScan, self.prefix+'/scan', self.receive_scan, qos),
+        self.subscriptions = [node.create_subscription(Odometry, self.wheel_topic, self.wheel, qos),
+            node.create_subscription(LaserScan, self.scan_topic, self.receive_scan, qos),
             node.create_subscription(Odometry, self.local+'/odom', self.receive_odometry, QoSProfile(depth=100))]
         self.started = time.monotonic()
         self.last_output = None
@@ -102,8 +116,15 @@ class ScanOdometry(Component):
             self.counts['invalid'] += 1
             return
         self.wheel_frame = msg.header.frame_id
-        pose = Pose(position=values[:3], rotation=values[3:], wrd_frame=self.guess_frame,
+        absolute = Pose(position=values[:3], rotation=values[3:], wrd_frame=self.wheel_frame,
                     ego_frame=self.mount.wrd_frame)
+        if self.wheel_origin is None:
+            self.wheel_origin = absolute
+        relative = ~self.wheel_origin * absolute
+        # RTAB initializes from its guess TF. A persistent MCU odom origin must
+        # not become a startup jump against the session-relative IMU/EKF origin.
+        pose = Pose(position=relative.position, rotation=relative.quat,
+                    wrd_frame=self.guess_frame, ego_frame=self.mount.wrd_frame)
         self.tf.publish(TFMessage(transforms=[pose_transform(pose, msg.header.stamp)]))
         self.wheel_times.append(stamp)
         self.flush()

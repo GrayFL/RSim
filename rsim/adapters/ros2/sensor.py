@@ -10,9 +10,9 @@ from .conversions import (
 class RosSensor(PrimaryComponent):
 
     def __init__(
-            self, topic, kind, *, clock, driver=None, hz=200, history=16
+            self, topic, kind, *, clock, driver=None, hz=200, history=16, ros=None
         ):
-        children = (RosContext(), ) + ((driver, ) if driver else ())
+        children = (ros if ros is not None else RosContext(), ) + ((driver, ) if driver else ())
         super().__init__(
             *children, key=f"ros:{kind}:{topic}", history=history, output_name=kind, clock=clock
             )

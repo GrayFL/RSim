@@ -7,7 +7,8 @@
 ```mermaid
 flowchart LR
     L[Seyond 逐点时间点云] --> I[时钟映射 / 点云格式转换]
-    C[ROS1 底盘 IMU] --> B[SSH 兼容桥]
+    C[底盘 IMU 原生 ROS 信号] --> I
+    C1[可选旧 ROS1 底盘] --> B[SSH 兼容桥]
     B --> I
     I --> S[Super-LIO]
     S --> O[去畸变扫描 + 扫描末端位姿]
@@ -15,7 +16,7 @@ flowchart LR
     D[D435 RGB + 内参 + TF] --> J[时间匹配 / 运动补偿 / 投影上色]
     O --> J
     H --> J
-    W[轮速 + 底盘陀螺] --> F[采样时间插值 / robot_localization EKF]
+    W[轮速 + 完整姿态 IMU] --> F[独立 Odometry / robot_localization EKF]
     Q[2D 扫描 / 原生 ICP 里程计] --> F
     F --> R[RTAB-Map 视觉配准 + 激光 ICP / 回环图优化]
     J --> R
@@ -249,13 +250,13 @@ python -m examples.mapping.mapping mapping.yaml --seconds 30 --plot
 
 二维前端使用原生 RTAB `icp_odometry`，轮式位姿只提供去畸变和初值。它的动态/静态 TF 使用私有话题，不占用全局 odom→base。扫描须有有效逐束时间，轮式位姿覆盖首末光束，覆盖区间内不允许超过0.1秒的缺口。二维前端与融合均不依赖 Super-LIO 位姿，因此没有反馈等待环。
 
-融合以二维扫描的采样时刻为基准，对轮式 body XY 速度、经真实安装旋转变换后的 IMU yaw 角速作双边插值；仅有过去样本时等待未来样本，不外推。打包的扫描位姿和速度具有同一时间戳，送入原生 `robot_localization/ekf_node`。局部坐标原点由二维前端定义；轮式全局位置和 IMU 的未标定绝对航向不参与更新。当前采用地面机器人平面运动假设，不是通用六自由度融合器。
+融合现在复用独立的 `drivers.Odometry`，与底盘控制使用同一套轮速＋完整姿态 IMU＋可选扫描算法。轮速只融合 body 速度，IMU 用完整姿态去除重力并融合相对 yaw、yaw 角速度和前向加速度；扫描提供 XY/yaw 位置观测。各输入保持自身采样时刻，原生 `robot_localization` 回溯处理迟到扫描，输出跟随较新的轮速/IMU。坐标原点按本次会话建立，启动时应保持静止。接口、噪声配置、安装与平面运动限制见 [里程计说明](odometry.md)。
 
-输入保留有效协方差，并增加 XY 位置3厘米、yaw 1度、轮速0.03 m/s、陀螺0.02 rad/s 的噪声标准差下限。它们是原型权重；二维扫描使用轮速初值，两者的误差相关性没有完整建模，不能用输出协方差声称定位精度。无效配准或非法协方差拒绝并计数。
+`fusion_parameters` 覆盖原生 EKF 参数，默认 50 Hz、`smooth_lagged_data=true`、3 秒历史、`sensor_timeout=0.2`，关闭预测到当前墙钟和全局 TF 发布。坐标、输入掩码与话题属于组件契约，不能冲突覆盖。轮速或 IMU 源采样年龄超过 0.3 秒后，适配器停止刷新公开位姿，不能用外推掩盖断流。滤波器不会重新发布全部历史位姿；已经提交的历史关键帧仍由 RTAB 图优化修正。
 
-`fusion_parameters` 直接覆盖原生 EKF 参数，默认开启 `smooth_lagged_data`、保留10秒历史，关闭预测到当前墙钟。`sensor_timeout` 默认60秒，组件自身会在输出采样时间连续5秒不前进时失败，避免正常传输延迟触发预测到墙钟。坐标、输入掩码、话题及平面模式等组件契约不可冲突覆盖。滤波器处理迟到观测可回溯重算当前状态，但不会重新发布所有历史位姿；已经提交的历史关键帧由 RTAB 图优化修正。
+`status.fusion` 报告各输入计数、无效观测、输入与位姿年龄。`status.mapping.mapping_lag_s` 为最后关键帧采样时刻距当前的时间。默认扫描/图像缓冲容量为128/300，`map_options.max_wait_s`、`scan_capacity`、`image_capacity` 可按预期延迟与内存预算调整。
 
-`status.fusion` 报告配对数、无效数据、缺少插值包围、待处理数及里程计延迟；`status.mapping.mapping_lag_s` 报告最后提交的关键帧采样时刻距当前多久。默认扫描/图像缓冲容量为128/300，`map_options.max_wait_s`、`scan_capacity`、`image_capacity` 可按预期延迟与内存预算调整。缓冲有界，不能容纳无限积压；地图允许滞后不代表控制反馈可以无限滞后。
+本机原生 ROS 底盘省略 `connection`，配置 `topics.imu`、`topics.odom`、`topics.scan`，chassis 时钟偏移为零。输入通过本地 `RosSensor` 读取；保留 `connection` 时使用 ROS1 桥。两者都不在内部创建 ROS2Topic/SharedSensor 数据中继。
 
 ## RTAB 视觉与激光回环
 

@@ -2,6 +2,8 @@
 
 完整接口与参数说明见 [控制文档](../../docs/control.md)。
 
+原生 ROS 底盘使用 [native_chassis.example.yaml](native_chassis.example.yaml) 组装轮速＋完整姿态 IMU，可选择加入 2D ICP；[native_chassis.ipynb](native_chassis.ipynb) 提供驱动侧零速示例，详见 [里程计说明](../../docs/odometry.md)。内部直接使用 ROS 信号，最终服务与以下客户端接口一致。
+
 跨机器客户端使用 [DDS 配置模板](cyclonedds.remote.xml)；双端环境变量、WSL 输入与端口配置见 [远程控制说明](../../docs/remote-control.md)。
 
 1. 在驱动环境执行 `python -m rsim.apps.chassis_service --simulate --enable-motion`。

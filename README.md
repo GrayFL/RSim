@@ -144,3 +144,5 @@ python -m pytest -q --junitxml=assets/tests.xml
 绘图使用 `scipykit.mtp_initializer`，生成图像、报告和日志放在根目录 `assets/`。本地环境及开发记录仅写入不提交 Git 的 `PROJECT.md`；通用约定见 [开发说明](docs/development.md)。
 
 键盘及跨环境指令控制见 [解耦控制接口](docs/control.md)，跨机器 DDS 与 WSL 配置见 [远程控制](docs/remote-control.md)，示例按主题整理在 [examples 索引](examples/README.md)。服务由 `rsim.drivers.Chassis` 提供，无 ROS 客户端使用 `rsim.devices.Chassis`。
+
+轮速、完整姿态 IMU 与可选 2D ICP 可通过 [独立里程计组件](docs/odometry.md) 为控制与建图提供统一 Pose。原生 ROS 底盘配置见 [模板](examples/control/native_chassis.example.yaml)。

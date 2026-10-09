@@ -66,6 +66,32 @@ def test_invalid_output_quaternion_is_not_healthy(tmp_path):
     assert c.last_output is None
 
 
+def test_wheel_guess_starts_at_session_origin_even_if_mcu_has_moved(tmp_path):
+    from nav_msgs.msg import Odometry
+    from graphmap.pose import Pose
+    c = component(tmp_path)
+    sent = []
+    c.tf = SimpleNamespace(publish=sent.append)
+    message = Odometry()
+    message.header.frame_id = 'persistent_wheel'
+    message.header.stamp.sec = 1
+    message.child_frame_id = 'base_footprint'
+    message.pose.pose.position.x = 3.
+    message.pose.pose.position.y = -2.
+    q = Pose(rotation=[0, 0, 90]).quat
+    for axis, value in zip('xyzw', q):
+        setattr(message.pose.pose.orientation, axis, float(value))
+    c.wheel(message)
+    transform = sent[-1].transforms[0].transform
+    np.testing.assert_allclose([transform.translation.x, transform.translation.y], 0, atol=1e-12)
+    assert transform.rotation.w == pytest.approx(1.)
+    message.header.stamp.nanosec = 20_000_000
+    message.pose.pose.position.y += .1
+    c.wheel(message)
+    transform = sent[-1].transforms[0].transform
+    np.testing.assert_allclose([transform.translation.x, transform.translation.y], [.1, 0], atol=1e-12)
+
+
 @pytest.mark.parametrize('fuse', [False, True])
 def test_mapping_recipe_keeps_scan_frontend_independent_from_super_lio(tmp_path, fuse):
     from rsim.core import Component

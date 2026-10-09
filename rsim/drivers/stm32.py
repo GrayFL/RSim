@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def STM32(port=None, *, namespace="/rsim/chassis", motion_enabled=False,
-          history=128, parameters=None, ros_args=None, log_path=None, start_driver=True):
+          history=128, parameters=None, ros_args=None, log_path=None, start_driver=True, ros=None):
     """Expose odom/state Signals and a velocity CommandSink.
 
     Native ROS parameters and remaps pass through unchanged. Commands and the
@@ -19,7 +19,7 @@ def STM32(port=None, *, namespace="/rsim/chassis", motion_enabled=False,
                            {"__ns": namespace, "__node": "stm32_driver"})
     values, topics = effective_settings(options, "stm32_driver", "/", lambda _: {
         name: name for name in ("odom", "diagnostics", "set_velocity", "stop")})
-    if not values["port"]:
+    if start_driver and not values["port"]:
         raise ValueError("STM32 requires an explicit serial port")
     resolved_port = str(Path(values["port"]).expanduser().resolve())
     if log_path is not None:
@@ -27,5 +27,5 @@ def STM32(port=None, *, namespace="/rsim/chassis", motion_enabled=False,
         log_path.parent.mkdir(parents=True, exist_ok=True)
     driver = Driver("rsim_stm32", "stm32_node", options,
                     key="stm32-port:" + resolved_port, log_path=log_path) if start_driver else None
-    return Stm32Chassis(topics=topics, driver=driver, history=history,
+    return Stm32Chassis(topics=topics, driver=driver, history=history, ros=ros,
                        max_ttl=values.get("max_command_ttl", .5))

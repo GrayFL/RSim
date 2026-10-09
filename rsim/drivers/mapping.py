@@ -12,7 +12,7 @@ class MappingProvider(MappingSave, SharedProvider):
     pass
 
 
-def Mapper(*, connection, lidar_ip, mounts, database, name='mapping', history=3,
+def Mapper(*, connection=None, lidar_ip, mounts, database, name='mapping', history=3,
            transport=None, timing=None, allow_estimated_timing=False,
            topics=None, camera_parameters=None, lidar_parameters=None,
            lio_parameters=None, rtabmap_parameters=None, cloud_filter=None, map_options=None,
@@ -28,7 +28,7 @@ def Mapper(*, connection, lidar_ip, mounts, database, name='mapping', history=3,
     from rsim.adapters.ros1 import SSHConfig
     if isinstance(connection, dict):
         connection = SSHConfig(**connection)
-    if not isinstance(connection, SSHConfig):
+    if connection is not None and not isinstance(connection, SSHConfig):
         raise TypeError('mapping connection must be SSHConfig or its keyword mapping')
     required_mounts = {'body_lidar', 'body_imu', 'body_camera'}
     if scan2d_parameters is not None:
@@ -36,12 +36,14 @@ def Mapper(*, connection, lidar_ip, mounts, database, name='mapping', history=3,
     if set(mounts) != required_mounts:
         raise ValueError(f'mapping needs mounts: {sorted(required_mounts)}')
     timing = {key: dict((timing or {}).get(key, {})) for key in ('lidar', 'chassis')}
+    if connection is None:
+        timing['chassis'].setdefault('offset_s', 0.)
     if not allow_estimated_timing and any(value.get('offset_s') is None for value in timing.values()):
         raise ValueError('supply measured clock offsets or explicitly allow_estimated_timing')
     database = str(Path(database).expanduser().resolve())
     if fusion_parameters is not None and scan2d_parameters is None:
         raise ValueError('mapping fusion requires scan2d_parameters and body_scan')
-    settings = dict(fusion_parameters=fusion_parameters, scan2d_parameters=scan2d_parameters, connection=asdict(connection), lidar_ip=lidar_ip, mounts=mounts, database=database,
+    settings = dict(fusion_parameters=fusion_parameters, scan2d_parameters=scan2d_parameters, connection=asdict(connection) if connection else None, lidar_ip=lidar_ip, mounts=mounts, database=database,
         name=name, timing=timing, topics=topics or {}, camera_parameters=camera_parameters or {},
         lidar_parameters=lidar_parameters or {}, lio_parameters=lio_parameters or {},
         rtabmap_parameters=rtabmap_parameters or {}, cloud_filter=cloud_filter or {}, map_options=map_options or {})
@@ -111,7 +113,8 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
             'lidar_ip': lidar_ip, 'frame_topic': prefix + '/raw/points',
             'frame_id': T_base_lidar.ego_frame, 'coordinate_mode': 3, **lidar_parameters},
             key='driver:robin:' + lidar_ip, log_path=directory/'lidar.log')
-        inputs = MappingInputs(ros, Ros1Bridge(SSHConfig(**connection), log_path=directory/'chassis.log'),
+        bridge = Ros1Bridge(SSHConfig(**connection), log_path=directory/'chassis.log') if connection is not None else None
+        inputs = MappingInputs(ros, bridge,
             prefix=prefix, lidar_driver=lidar, camera_driver=camera,
             mounts=list(geometry.values()), topics=topics, timing=timing, cloud_filter=cloud_filter)
     scan2d = None
@@ -120,7 +123,8 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
         if 'body_scan' not in geometry:
             raise ValueError('scan odometry requires an explicit body_scan mount')
         scan2d = ScanOdometry(inputs.ros, prefix=prefix, mount=geometry['body_scan'],
-                             directory=directory, parameters=scan2d_parameters)
+                             directory=directory, parameters=scan2d_parameters,
+                             odom_frame=frames['odom'] if fusion_parameters is not None else None)
     native_lio = {
         'lio.ros.lidar_topic': prefix + '/lidar', 'lio.ros.imu_topic': prefix + '/imu',
         'lio.ros.reliable_lidar': True,
@@ -207,11 +211,13 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
     options = dict(map_options or {})
     fusion = None
     if fusion_parameters is not None:
-        from rsim.adapters.ros2.mapping_fusion import MappingFusion
+        from .odometry import Odometry
         from rsim.components.synchronization import SampleHistory
-        fusion = MappingFusion(inputs.ros, scan2d, prefix=prefix, frames=frames, mount=T_base_imu,
-            directory=directory, parameters=fusion_parameters, history=PoseHistory(capacity=4096),
-            covariance_history=SampleHistory(), wheel_history=SampleHistory(), gyro_history=SampleHistory())
+        fusion = Odometry(ros=inputs.ros, scan=scan2d, prefix=prefix+'/fusion',
+            wheel_topic=prefix+'/wheel_odom', imu_topic=prefix+'/imu',
+            world_frame=frames['odom'], imu_mount=T_base_imu,
+            directory=directory, parameters=fusion_parameters, pose_history=PoseHistory(capacity=4096),
+            covariance_history=SampleHistory())
     ledger = MapLedger(resolution=options.pop('resolution', .05), frame_id=frames['map'])
     mapping = LaserMappingIO(ledger=ledger, pose_history=PoseHistory(capacity=4096), keyframe_type=LaserKeyframe,
         camera_type=PinholeCamera, colorize=colorize_laser, T_base_imu=T_base_imu,

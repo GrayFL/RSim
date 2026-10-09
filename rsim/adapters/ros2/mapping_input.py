@@ -99,7 +99,7 @@ def pose_transform(pose, stamp=None):
 
 
 class MappingInputs(Component):
-    """Read-only ROS1 ingress, timed lidar conversion and fixed sensor TF."""
+    """Local ROS or optional ROS1 ingress, timed lidar and fixed sensor TF."""
     def __init__(self, ros, bridge, *, prefix, lidar_driver, camera_driver,
                  mounts, topics, timing, cloud_filter, history=512):
         self.ros, self.bridge, self.prefix = ros, bridge, prefix
@@ -108,8 +108,16 @@ class MappingInputs(Component):
             'imu': bridge.topic(topics['imu'], 'sensor_msgs/Imu', hz=500, history=history),
             'wheel_odom': bridge.topic(topics['odom'], 'nav_msgs/Odometry', hz=100, history=64),
             'scan': bridge.topic(topics['scan'], 'sensor_msgs/LaserScan', hz=30, history=16),
-        }
-        super().__init__(ros, lidar_driver, camera_driver, *self.remote.values())
+        } if bridge is not None else {}
+        if bridge is None:
+            from .sensor import RosSensor
+            if timing['chassis'].get('offset_s') != 0:
+                raise ValueError('native ROS chassis timestamps require offset_s=0')
+            self.remote = {name: RosSensor(topics[key], kind, ros=ros,
+                clock='ros:system', hz=500, history=history) for name, key, kind in
+                (('imu', 'imu', 'imu'), ('wheel_odom', 'odom', 'odom'), ('scan', 'scan', 'scan'))}
+        super().__init__(ros, lidar_driver, camera_driver,
+                         inputs=tuple(source.output for source in self.remote.values()))
         self.lidar_clock = ClockAlignment(**timing['lidar'])
         self.chassis_clock = ClockAlignment(**timing['chassis'])
         self.pending = deque(maxlen=4)
@@ -125,6 +133,7 @@ class MappingInputs(Component):
         from sensor_msgs.msg import Imu, LaserScan, PointCloud2
         from rclpy.qos import qos_profile_sensor_data, QoSProfile
         from tf2_ros import StaticTransformBroadcaster
+        self.ros = self.dependencies[0]
         node = self.ros.node
         self.types = {'imu': Imu, 'wheel_odom': Odometry, 'scan': LaserScan}
         for name, cls in dict(self.types, lidar=PointCloud2).items():

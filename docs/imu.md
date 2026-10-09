@@ -4,10 +4,13 @@
 
 ## 依赖与 ROS2 包
 
-先安装 graphmap 项目的 Pose v3 及其依赖，再安装本库的可选依赖：
+先按 graphmap 项目的说明准备 Pose v3，再准备串口与配置依赖，最后安装本库。graphmap 是单独维护的源码包，不能假定公开包索引上的同名包满足本项目版本要求。每次安装前先检查 uv 的计划，确认不会改变 NumPy、Torch 等已锁定版本：
 
 ```bash
-python -m pip install -e '.[imu,config]'
+uv pip install --dry-run --python "$(command -v python)" pyserial PyYAML
+uv pip install --python "$(command -v python)" pyserial PyYAML
+uv pip install --dry-run --python "$(command -v python)" --no-deps -e '.[imu,config]'
+uv pip install --python "$(command -v python)" --no-deps -e '.[imu,config]'
 ```
 
 串口读取需要 pyserial，配置加载需要 PyYAML。Linux 通常已提供 `cp210x` 内核驱动；先检查 USB 枚举、`/dev/serial/by-id/`、设备权限及实际绑定的驱动，不应直接用旧版厂商驱动覆盖当前内核模块。没有指定 port 时，只在恰好发现一台 CP210x 时自动选择，多台设备必须明确指定。

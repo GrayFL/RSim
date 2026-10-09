@@ -10,7 +10,7 @@
 python -m rsim.apps.chassis_service --simulate --enable-motion
 ```
 
-实机使用 [本机底盘配置](local-chassis.md)。省略 `--enable-motion` 时，控制器和原生电机驱动都禁止非零运动：
+原生 ROS 底盘使用 [可组合里程计与配置](odometry.md)，旧的外置 IMU 标定方案见 [本机底盘配置](local-chassis.md)。省略 `--enable-motion` 时服务禁止非零运动；由配置启动的电机驱动也关闭运动，已运行的驱动保留自己的设置：
 
 ```bash
 python -m rsim.apps.chassis_service --config configs/local_chassis.yaml
@@ -20,10 +20,10 @@ python -m rsim.apps.chassis_service --config configs/local_chassis.yaml
 
 ```python
 from rsim.runtime import Runtime
-from rsim.config.local_chassis import load_local_chassis
+from rsim.config import load_chassis
 from rsim.drivers import Chassis
 
-robot = load_local_chassis(config_file, motion_enabled=False)
+robot = load_chassis(config_file, motion_enabled=False)
 service = Chassis(robot, name="chassis")
 async with Runtime(service):
     await service.wait()

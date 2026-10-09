@@ -9,8 +9,8 @@ from .context import RosContext
 
 
 class Stm32Chassis(PrimaryComponent):
-    def __init__(self, *, topics, driver=None, history=128, max_ttl=.5):
-        super().__init__(RosContext(), *((driver,) if driver else ()),
+    def __init__(self, *, topics, driver=None, history=128, max_ttl=.5, ros=None):
+        super().__init__(ros if ros is not None else RosContext(), *((driver,) if driver else ()),
                          key="stm32:" + topics["odom"], history=history,
                          output_name="odom", clock="ros:system")
         self.odom = self.output
