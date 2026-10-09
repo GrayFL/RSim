@@ -10,9 +10,9 @@ from rsim.adapters.hipnuc import SerialIMU
 class ImuPublisher(Component):
     def __init__(self, node):
         self.node = node
-        defaults = dict(port="", baudrate=115200, frame_id="hipnuc_imu",
+        defaults = dict(port="", baudrate=460800, frame_id="hipnuc_imu",
                         navigation_frame="device_navigation", gravity=9.8,
-                        hz=500., timeout=3., history=128)
+                        hz=400., timeout=3., history=128)
         values = {}
         for name, default in defaults.items():
             if not node.has_parameter(name):
@@ -26,7 +26,7 @@ class ImuPublisher(Component):
         from sensor_msgs.msg import Imu
         from rclpy.qos import qos_profile_sensor_data
         self.publisher = self.node.create_publisher(Imu, "imu/data", qos_profile_sensor_data)
-        self.task("publish", self.publish, hz=500)
+        self.task("publish", self.publish, hz=400)
         self.task("ros", self.spin, hz=200)
         self.node.get_logger().info(f"Reading {self.source.port} at {self.source.baudrate}; reception timestamps")
 

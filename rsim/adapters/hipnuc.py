@@ -161,7 +161,7 @@ class SerialIMU(PrimaryComponent):
     Frame time is host monotonic *reception*, not device sample time. Optional
     IMUSOL boot milliseconds remain metadata, without inventing clock alignment.
     """
-    def __init__(self, port=None, *, baudrate=115200, frame_id="hipnuc_imu",
+    def __init__(self, port=None, *, baudrate=460800, frame_id="hipnuc_imu",
                  navigation_frame="device_navigation", gravity=9.8, hz=500,
                  timeout=3., history=128):
         self.port = serial_port(port)

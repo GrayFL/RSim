@@ -11,7 +11,7 @@ chassis:
     start_driver: false
     # port: /dev/serial/by-id/your-imu
     parameters:
-      baudrate: 115200
+      baudrate: 460800
   imu_mount:
     wrd_frame: base_footprint
     ego_frame: imu_frame

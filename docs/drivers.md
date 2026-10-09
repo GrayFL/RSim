@@ -96,7 +96,7 @@ python -m rsim.drivers d435 \
 python -m rsim.drivers stm32 --port "$STM32_PORT" \
   --log-path assets/stm32-native.log
 
-python -m rsim.drivers imu --port "$IMU_PORT" --baudrate 115200 \
+python -m rsim.drivers imu --port "$IMU_PORT" --baudrate 460800 \
   --imu-mode ros2 --frame-id imu_frame --backend ros2 \
   --ros-args -r imu/data:=/rsim/chassis/imu/data
 

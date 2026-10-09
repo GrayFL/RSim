@@ -35,7 +35,7 @@ source install/setup.bash
 from rsim import Runtime
 from rsim.adapters.hipnuc import SerialIMU
 
-imu = SerialIMU(port=serial_device, baudrate=115200)
+imu = SerialIMU(port=serial_device, baudrate=460800)
 async with Runtime(imu):
     frame = await imu.imu.get(timeout=5)
     acceleration = frame.data["linear_acceleration"]   # x/y/z，m/s²
@@ -61,11 +61,11 @@ async with Runtime(imu):
 ```bash
 python -m rsim.drivers imu --imu-mode serial --port /dev/ttyUSB0
 python -m rsim.drivers imu --imu-mode ros2 --port /dev/ttyUSB0 \
-  --ros-args -p baudrate:=115200 -p frame_id:=imu_link -r imu/data:=/sensors/imu
+  --ros-args -p baudrate:=460800 -p frame_id:=imu_link -r imu/data:=/sensors/imu
 
 ros2 run rsim_hipnuc serial_node --ros-args \
-  -p port:=/dev/ttyUSB0 -p baudrate:=115200 -p frame_id:=imu_link
-ros2 launch rsim_hipnuc serial.launch.py port:=/dev/ttyUSB0 baudrate:=115200
+  -p port:=/dev/ttyUSB0 -p baudrate:=460800 -p frame_id:=imu_link
+ros2 launch rsim_hipnuc serial.launch.py port:=/dev/ttyUSB0 baudrate:=460800
 ```
 
 函数的 `parameters={...}`、`ros_args=[...]` 支持原生参数文件、节点名/namespace/topic remap；订阅器会解析最终话题。主要启动参数为 `port`、`baudrate`、`frame_id`、`navigation_frame`、`gravity`、`hz`、`timeout`、`history`。`mode="serial"` 的 `parameters` 对应 SerialIMU 构造参数，不能传 ROS argv。

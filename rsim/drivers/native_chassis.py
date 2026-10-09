@@ -61,11 +61,11 @@ def NativeChassis(*, stm32, imu, imu_mount, directory, scan=None, scan_mount=Non
             key=('hipnuc-node:' if kind == 'imu' else 'bluesea-port:')+parameters['port'],
             log_path=directory/(kind+'.log')) if start else None
         return RosSensor(topic, kind, ros=ros, clock='ros:system', driver=driver,
-                         history=512, hz=500 if kind == 'imu' else 100)
+                         history=512, hz=400 if kind == 'imu' else 100)
 
     frame = imu_mount['ego_frame'] if isinstance(imu_mount, dict) else imu_mount.ego_frame
     raw_imu = sensor(imu, 'imu', 'rsim_hipnuc', 'serial_node',
-        dict(baudrate=115200, frame_id=frame, navigation_frame='enu'),
+        dict(baudrate=460800, frame_id=frame, navigation_frame='enu'),
         lambda topic: {'imu/data': topic})
     settings = dict(odometry or {})
     scan_signal = scan_filter = scan_owner = None
