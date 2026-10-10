@@ -274,7 +274,7 @@ def test_mapping_recipe_passes_native_parameters_and_transform(tmp_path, recorde
         database=str(tmp_path/'map.db'), name='test', timing={'lidar': {}, 'chassis': {}},
         topics={}, camera_parameters={}, lidar_parameters={}, cloud_filter={},
         lio_parameters={'lio.sensor.filter_rate': 7}, rtabmap_parameters={'Grid/3D': 'false'},
-        input_source=source)
+        input_source=source, start_drivers=not recorded)
     lio = next(child for child in graph.children if getattr(child, 'package', None) == 'super_lio')
     assert lio.parameters['lio.sensor.filter_rate'] == 7
     assert not any(k.startswith(('lio.wheel.', 'lio.planar.')) for k in lio.parameters)

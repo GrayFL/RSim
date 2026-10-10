@@ -116,7 +116,7 @@ class MappingInputs(Component):
             self.remote = {name: RosSensor(topics[key], kind, ros=ros,
                 clock='ros:system', hz=500, history=history) for name, key, kind in
                 (('imu', 'imu', 'imu'), ('wheel_odom', 'odom', 'odom'), ('scan', 'scan', 'scan'))}
-        super().__init__(ros, lidar_driver, camera_driver,
+        super().__init__(ros, *(driver for driver in (lidar_driver, camera_driver) if driver is not None),
                          inputs=tuple(source.output for source in self.remote.values()))
         self.lidar_clock = ClockAlignment(**timing['lidar'])
         self.chassis_clock = ClockAlignment(**timing['chassis'])
@@ -146,7 +146,7 @@ class MappingInputs(Component):
                 self.dropped += 1
             self.pending.append((msg, time.time()))
             self.record_received('lidar')
-        self.subscription = node.create_subscription(PointCloud2, self.prefix + '/raw/points',
+        self.subscription = node.create_subscription(PointCloud2, self.topics.get('points', self.prefix + '/raw/points'),
                                                        receive, QoSProfile(depth=4))
         # Seyond publishes reliably. Request retransmission for these multi-MB
         # clouds: best-effort fragment loss otherwise drops the entire scan.

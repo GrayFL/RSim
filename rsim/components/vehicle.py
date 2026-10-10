@@ -15,15 +15,15 @@ from rsim.core.commands import VelocityCommand
 class VehicleParameters:
     acceleration: float = 0.22
     friction: float = 0.06
-    drag: float = 16.0
-    angular_acceleration: float = 0.5
+    drag: float = 4.0
+    angular_acceleration: float = 1.0
     angular_friction: float = 0.12
-    angular_drag: float = 16.8888888889
+    angular_drag: float = 5.5
     wheelbase: float = 0.45
     steering_max_deg: float = 35.0
-    steering_speed_scale: float = 0.12
-    pivot_rate: float = 0.15
-    pivot_transition_speed: float = 0.035
+    steering_speed_scale: float = 0.24
+    pivot_rate: float = 0.4
+    pivot_transition_speed: float = 0.07
     hz: float = 30.0
     command_ttl: float = 0.25
     max_loop_gap: float = 0.2

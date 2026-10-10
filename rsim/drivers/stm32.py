@@ -3,11 +3,12 @@ from pathlib import Path
 
 
 def STM32(port=None, *, namespace="/rsim/chassis", motion_enabled=False,
-          history=128, parameters=None, ros_args=None, log_path=None, start_driver=True, ros=None):
+          history=128, parameters=None, ros_args=None, log_path=None, start_driver=True, ros=None,
+          remote_clock=False, feedback_sources=None):
     """Expose odom/state Signals and a velocity CommandSink.
 
-    Native ROS parameters and remaps pass through unchanged. Commands and the
-    native driver must run on the same host (shared CLOCK_MONOTONIC). Place this
+    Native ROS parameters and remaps pass through unchanged. Set remote_clock
+    when connecting to a driver on another host. Place this
     component in a ProcessPlacement to isolate ROS from the application loop.
     An external IMU is composed separately; this MCU protocol contains no IMU.
     """
@@ -18,7 +19,7 @@ def STM32(port=None, *, namespace="/rsim/chassis", motion_enabled=False,
     options = RosArguments({**defaults, **(parameters or {})}, ros_args,
                            {"__ns": namespace, "__node": "stm32_driver"})
     values, topics = effective_settings(options, "stm32_driver", "/", lambda _: {
-        name: name for name in ("odom", "diagnostics", "set_velocity", "stop")})
+        name: name for name in ("odom", "diagnostics", "set_velocity", "stop", "clock")})
     if start_driver and not values["port"]:
         raise ValueError("STM32 requires an explicit serial port")
     resolved_port = str(Path(values["port"]).expanduser().resolve())
@@ -28,4 +29,5 @@ def STM32(port=None, *, namespace="/rsim/chassis", motion_enabled=False,
     driver = Driver("rsim_stm32", "stm32_node", options,
                     key="stm32-port:" + resolved_port, log_path=log_path) if start_driver else None
     return Stm32Chassis(topics=topics, driver=driver, history=history, ros=ros,
-                       max_ttl=values.get("max_command_ttl", .5))
+                       max_ttl=values.get("max_command_ttl", .5),
+                       remote_clock=remote_clock, feedback_sources=feedback_sources)

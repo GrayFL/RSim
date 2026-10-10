@@ -1,5 +1,6 @@
 #include "rsim_stm32/protocol.hpp"
 #include "rsim_stm32/srv/set_velocity.hpp"
+#include "rsim_stm32/srv/clock.hpp"
 #include "rsim_stm32/srv/stop.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -109,6 +110,11 @@ class Stm32Node : public rclcpp::Node {
     estop_ = create_publisher<std_msgs::msg::Bool>("estop", rclcpp::QoS(1).transient_local());
     normal_ = create_publisher<std_msgs::msg::Bool>("is_normal", rclcpp::QoS(1).transient_local());
     diagnostics_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>("diagnostics", 5);
+    instance_ = std::to_string(getpid()) + ":" + std::to_string(monotonic_ns());
+    clock_service_ = create_service<srv::Clock>("clock",
+      [this](const std::shared_ptr<srv::Clock::Request>, std::shared_ptr<srv::Clock::Response> res) {
+        res->instance = instance_; res->monotonic_ns = monotonic_ns();
+      });
     command_service_ = create_service<srv::SetVelocity>("set_velocity",
       [this](const std::shared_ptr<srv::SetVelocity::Request> req,
              std::shared_ptr<srv::SetVelocity::Response> res) { command(*req, *res); });
@@ -150,6 +156,9 @@ class Stm32Node : public rclcpp::Node {
   }
   void command(const srv::SetVelocity::Request &request, srv::SetVelocity::Response &response) {
     std::unique_lock<std::mutex> lock(mutex_);
+    if (!request.driver_instance.empty() && request.driver_instance != instance_) {
+      response.reason = "driver instance changed"; ++rejected_; return;
+    }
     Command command{request.controller_id, request.controller_epoch, request.sequence,
       request.deadline_ns, request.linear_x, request.angular_z};
     int64_t now = monotonic_ns();
@@ -304,13 +313,14 @@ class Stm32Node : public rclcpp::Node {
   uint64_t frames_ = 0, invalid_ = 0, missed_ = 0, duplicates_ = 0, counter_resets_ = 0, queue_drops_ = 0;
   uint64_t revision_ = 0, sent_revision_ = 0, writes_ = 0, rejected_ = 0;
   double last_sent_linear_ = 0., last_sent_angular_ = 0.;
-  std::string base_frame_, odom_frame_, io_error_;
+  std::string base_frame_, odom_frame_, io_error_, instance_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_;
   rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr battery_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_, normal_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_;
   rclcpp::Service<srv::SetVelocity>::SharedPtr command_service_;
   rclcpp::Service<srv::Stop>::SharedPtr stop_service_;
+  rclcpp::Service<srv::Clock>::SharedPtr clock_service_;
   rclcpp::TimerBase::SharedPtr publish_timer_, status_timer_;
 };
 }  // namespace rsim_stm32

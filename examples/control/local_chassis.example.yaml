@@ -9,7 +9,7 @@ chassis:
     feedback_timeout: 0.2
 imu:
   port: /dev/serial/by-id/REPLACE_WITH_IMU
-  baudrate: 468000
+  baudrate: 460800
   frame_id: hipnuc_imu
   history: 2048
 calibration: ../assets/local-chassis/planar-imu.json

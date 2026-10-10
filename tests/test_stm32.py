@@ -181,3 +181,21 @@ def test_native_provider_can_run_in_a_managed_child_process():
 
     with FakeBoard() as board:
         asyncio.run(run(board))
+
+
+def test_remote_clock_handshake_and_restart_identity_against_native_board():
+    native_available()
+    from rsim_stm32.srv import SetVelocity
+    async def run(board):
+        chassis = STM32(board.port, namespace='/test_' + uuid.uuid4().hex, remote_clock=True)
+        async with Runtime(chassis):
+            await chassis.odom.get(timeout=5)
+            assert chassis.clock_bound.instance
+            await chassis.velocity.set(VelocityCommand(), ttl=.2)
+            request = SetVelocity.Request(driver_instance='previous-process', controller_id='old',
+                controller_epoch='epoch', sequence=1, deadline_ns=time.monotonic_ns()+100_000_000)
+            reply = await chassis._rpc(chassis.client, request)
+            assert not reply.accepted and reply.reason == 'driver instance changed'
+        assert board.commands[-1][1:] == (0., 0.)
+    with FakeBoard() as board:
+        asyncio.run(run(board))

@@ -10,10 +10,10 @@
 python -m rsim.apps.chassis_service --simulate --enable-motion
 ```
 
-原生 ROS 底盘使用 [可组合里程计与配置](odometry.md)，旧的外置 IMU 标定方案见 [本机底盘配置](local-chassis.md)。省略 `--enable-motion` 时服务禁止非零运动；由配置启动的电机驱动也关闭运动，已运行的驱动保留自己的设置：
+先在硬件主机独立启动驱动，再在服务主机运行[话题接入与里程计](odometry.md)。省略 `--enable-motion` 时服务禁止非零运动；服务不启动电机或传感器，也不修改硬件原有的运动许可：
 
 ```bash
-python -m rsim.apps.chassis_service --config configs/local_chassis.yaml
+python -m rsim.apps.chassis_service --config configs/chassis_topics.yaml
 ```
 
 也可以直接组装并纳入已有事件循环：
@@ -23,7 +23,7 @@ from rsim.runtime import Runtime
 from rsim.config import load_chassis
 from rsim.drivers import Chassis
 
-robot = load_chassis(config_file, motion_enabled=False)
+robot = load_chassis(config_file, motion_enabled=False, hardware=False)
 service = Chassis(robot, name="chassis")
 async with Runtime(service):
     await service.wait()
@@ -31,7 +31,9 @@ async with Runtime(service):
 
 独立服务 CLI 默认将 BLAS 线程限制为 1，避免小矩阵运算争抢控制循环；可用 `--blas-threads` 调整。库式组装不修改调用方线程设置。
 
-所有端使用同一 `--name` 和 `--domain`；默认 `chassis` / `0`。函数中通过 `TransportConfig(domain_id=...)` 选择 domain。连接服务不需要共享配置文件；硬件参数与标定仅在服务端读取。
+服务 CLI 在运行时连接失败后默认清理旧会话，并重新订阅已有话题、建立驱动时钟和里程计。重试从1秒退避至最多5秒，`--reconnect-delay` 调整初始间隔，`--no-reconnect` 可选择失败即退出。恢复时使用新的服务代次，旧速度和相对运动不会续跑；客户端须重连。配置解析错误直接报错。此过程不启动或重启硬件，算法重建也不保证位姿历史连续。
+
+所有端使用同一 `--name` 和 `--domain`；默认 `chassis` / `0`。函数中通过 `TransportConfig(domain_id=...)` 选择 domain。连接服务不需要共享配置文件；硬件参数在硬件主机配置，安装标定与控制参数在服务端读取。
 
 跨机器使用同一客户端，网卡选择、静态发现、端口和 WSL 键盘设置见 [远程控制配置](remote-control.md)。
 
@@ -94,7 +96,11 @@ python -m rsim.apps.keyboard_control --input pygame --dry-run
 
 字体默认 `Inconsolata,Sarasa Mono SC`，按顺序逐字回退，不使用字体图标；字体需要安装在 **运行 Python 的一端**。可用 `--font "字体一,字体二"` 更改顺序。都不可用时回退 pygame 默认字体，但该字体未必包含中文。`--window-hz` 默认20，范围1–60；X转发可选10以降低绘制频率。只更新变化区域，未初始化音频设备。
 
-GUI 在独立子进程的主线程运行，通过有界非阻塞通道传递按键与显示数据；控制协程和 DDS 留在父进程。GUI 卡住、退出或输入超过 `max_loop_gap` 没有更新时，控制失败关闭，现有命令期限仍生效。窗口可以在 DDS 连接等待期间关闭；正常退出回收子进程并释放自己的控制会话。GUI 依赖属于 `rsim[teleop]`，也可在已有控制环境内单独安装 `pygame>=2.5`。从函数调用时使用 [PygameKeyboard](../rsim/adapters/pygame_keyboard.py) 与现有 `Teleoperation` 组装，脚本入口需放在 `if __name__ == "__main__":` 下，以支持 spawn。
+GUI 在独立子进程的主线程运行，通过有界非阻塞通道传递按键与显示数据；控制协程和 DDS 留在父进程。输入/模型更新与发送确认分别计时，只保留最新待发送指令，等待消耗其有效期，不积压旧按键。GUI 卡住、退出或输入超过 `max_loop_gap` 没有更新时停止控制，现有命令期限仍生效。GUI 依赖属于 `rsim[teleop]`，也可在已有控制环境内单独安装 `pygame>=2.5`。从函数调用时使用 [PygameKeyboard](../rsim/adapters/pygame_keyboard.py) 与现有 `Teleoperation` 组装，脚本入口需放在 `if __name__ == "__main__":` 下，以支持 spawn。
+
+pygame CLI 默认自动重连：连接超时、指令确认超时或服务重启后，停止续发运动指令，请求零速/释放会话，窗口保留并显示 `RECONNECTING`。临时输入停顿同样停止控制，等待输入恢复后重连；不会用旧输入维持运动。重试间隔从1秒逐步增加到最多5秒；`--reconnect-delay` 可设置初始间隔（0.1–5秒）。每次重建独立 DDS 客户端、时钟与控制会话；取得新位姿并确认零速后才显示已连接。**重连不会恢复旧速度或旧按键，须松开按键后重新按下才会运动。** 网络不可达时，底盘原有指令 TTL/deadman 负责停止，不因重试延长有效期，也不自动启动硬件或服务。窗口始终可用 Escape、关窗或 Ctrl-C 退出；窗口进程死亡仍需重新启动客户端。
+
+客户端日志记录启动模式、显示后端、窗口子进程 PID/退出码、重连次数及最终退出原因，区分 Escape、窗口关闭、Ctrl-C 与异常。每次连接失败保留完整堆栈；窗口自身故障等不可恢复错误以退出码1结束。窗口输入超时记录实际年龄与阈值，指令确认记录耗时和剩余 TTL。通过 `start_remote.sh` 启动时，日志保存在客户端机器的根 `assets/bringup/remote/`。`Connected` 只说明当次连接就绪，排查中断应查看 `Control connection lost` 及其异常链；资源清理不会被视为用户主动关闭。自动重连属于 pygame 应用层，库式 `rsim.devices.Chassis` 仍保留单会话失败语义。
 
 WSLg 本地启动和 SSH X 转发命令见 [远程控制](remote-control.md#wsl-和键盘)。Notebook 原有面板继续使用 pynput；独立 pygame 窗口请使用 CLI。
 
@@ -111,7 +117,7 @@ WSLg 本地启动和 SSH X 转发命令见 [远程控制](remote-control.md#wsl-
 v_{\max}=\sqrt{(a-f)/d}.
 \]
 
-其中 `acceleration` 为最大输入加速度，`friction` 为固定减速度，`drag` 为二次阻力系数；角速度使用对应的 `angular_*` 参数。静止时摩擦不会让车辆自发反向。默认平衡线速度为 0.1 m/s，平衡角速度约 0.15 rad/s。服务端还独立限制最大速度，修改模拟参数时应使推导上限落在服务端范围内。
+其中 `acceleration` 为最大输入加速度，`friction` 为固定减速度，`drag` 为二次阻力系数；角速度使用对应的 `angular_*` 参数。静止时摩擦不会让车辆自发反向。默认平衡线速度为 0.2 m/s，原地角速度上限为 0.4 rad/s，角加速度输入为 1.0 rad/s²（扣除摩擦与阻力后是实际模型加速度）。话题服务模板对应限制为 0.2 / 0.4，硬件环境模板通过原生参数设置 0.25 / 0.5。已有本地配置不会自动更新；必须核对客户端、服务和硬件三层，原生驱动参数需重启对应驱动才生效。
 
 虚拟转向角上限随速度缩小：`δmax = steering_max / (1 + (v / steering_speed_scale)²)`。角速度限制是 `|v| / wheelbase × tan(δmax)` 加上随线速度快速衰减的原地转向项，再受平衡角速度约束。`pivot_rate` 与 `pivot_transition_speed` 控制原地转向及其过渡。它是可调的运动手感模型，不是轮胎动力学或避障规划器。面板中的 steering 是归一化的虚拟角度，不代表差速底盘有实体转向轮。
 
@@ -127,6 +133,6 @@ pynput 需要客户端进程可访问的桌面会话，捕获范围是该桌面�
 
 客户端以 20 Hz 续租，默认会话期限 0.3 秒；服务端以 100 Hz 检查。手动速度还有独立命令期限，续租不会刷新旧速度。进程被杀或循环停顿时，服务端取消动作；原生 STM32 串口线程继续独立检查命令期限。服务端失败也取消内部动作。正常退出请求零速，硬断线、主机冻结仍依赖 MCU 通信超时保护，见 [原生驱动边界](local-chassis.md)。
 
-握手使用请求往返期间的单调时钟构造保守转换界限，网络耗时消耗 TTL。往返超过 50 ms 的时钟样本不会覆盖近期有效样本；连续 3 秒没有合格样本则停止服务连接。重启服务会使旧客户端失败，需要显式重新连接；旧会话不会自动恢复运动。位姿按真实源帧去重，保留时间域与历史，不用重复遥测伪造新位姿。
+握手使用请求往返期间的单调时钟构造保守转换界限，网络耗时消耗 TTL。往返超过 50 ms 的时钟样本不会覆盖近期有效样本；连续 3 秒没有合格样本则停止服务连接。重启服务会使旧客户端失败，库式调用方需重建连接；pygame 应用按上文自动重建，旧会话不会恢复运动。位姿按真实源帧去重，保留时间域与历史，不用重复遥测伪造新位姿。
 
 控制和小型位姿消息不依赖同机共享内存，可在 DDS 发现可达、同 domain 的其他主机连接；跨机时钟漂移、网络配置和负载条件需按部署环境验收。DDS 控制应置于可信网络；原型没有客户端身份认证。服务最多保留 1024 个会话的序号历史、64 个动作结果，达到会话限额会拒绝新会话。

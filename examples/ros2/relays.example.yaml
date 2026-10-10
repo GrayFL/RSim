@@ -1,0 +1,18 @@
+relays:
+  imu:
+    topic: /rsim/chassis/imu/data
+    kind: imu
+    history: 128
+  odom:
+    topic: /rsim/chassis/odom
+    kind: odom
+    history: 128
+  state:
+    topic: /rsim/chassis/diagnostics
+    kind: state
+    history: 32
+  scan:
+    enabled: false  # enable only when the lidar + chassis scan filter are running
+    topic: /rsim/chassis/scan
+    kind: scan
+    history: 32

@@ -1,6 +1,8 @@
 # 多传感器 RGB 建图
 
-`rsim.drivers.Mapper` 将 Super-LIO 与 RTAB-Map 组装为共享 provider；`load_mapper()` 从 YAML 创建同一个组件。**几何来自 Super-LIO 去畸变后的激光点，D435 提供 RGB 上色及视觉特征，默认关闭深度流。** RTAB-Map 接收匹配的 RGB、激光点云和里程计，默认将激光投影为视觉特征深度，以视觉匹配和激光 ICP 验证回环，再优化关键帧位姿。可选独立 EKF 融合轮速、底盘陀螺和二维扫描位姿，作为 RTAB 的局部里程计；不将这些约束塞入 Super-LIO。该组件只读设备，不创建速度写端。
+`rsim.drivers.Mapper` 将 Super-LIO 与 RTAB-Map 组装为共享 provider；`load_mapper()` 从 YAML 创建同一个组件。**几何来自 Super-LIO 去畸变后的激光点，D435 提供 RGB 上色及视觉特征，建图不使用相机深度流。** RTAB-Map 接收匹配的 RGB、激光点云和里程计，默认将激光投影为视觉特征深度，以视觉匹配和激光 ICP 验证回环，再优化关键帧位姿。可选独立 EKF 融合轮速、底盘陀螺和二维扫描位姿，作为 RTAB 的局部里程计；不将这些约束塞入 Super-LIO。该组件只读设备，不创建速度写端。
+
+默认只订阅已经运行的硬件 ROS2 话题。相机/雷达由其所在机器的硬件脚本独立启动；建图服务只启动 Super-LIO、RTAB-Map 和可选里程计算法。应用入口 `python -m rsim.apps.mapping_service` 不允许自动启动硬件或 SSH 连接；脚本、配方与查看器见[独立启动说明](bringup.md)。低层 `drivers.Mapper(start_drivers=True)` 保留为显式硬件实验接口。
 
 ## 数据流与接口
 
@@ -129,7 +131,7 @@ GraphMap 是应用侧可变对象，`update`、特征写入和保存应由同一
 
 ## 原生依赖
 
-provider 环境需匹配 ROS2 的 Python，能发现 `seyond/seyond_node`、`realsense2_camera/realsense2_camera_node`、`super_lio/super_lio_node` 和 `rtabmap_slam/rtabmap`。安装 Python 侧依赖：
+provider 环境需匹配 ROS2 的 Python，能发现 `super_lio/super_lio_node` 和 `rtabmap_slam/rtabmap`；`seyond` 与 `realsense2_camera` 安装在硬件主机。安装 Python 侧依赖：
 
 ```bash
 python -m pip install -e '.[dds,mapping]'

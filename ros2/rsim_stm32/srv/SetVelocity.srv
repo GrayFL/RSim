@@ -1,4 +1,6 @@
-# Same host only: Linux CLOCK_MONOTONIC, not ROS time or wall time.
+# Deadline uses the driver's Linux CLOCK_MONOTONIC. Remote clients first
+# synchronize through Clock and bind commands to that driver instance.
+string driver_instance
 string controller_id
 string controller_epoch
 uint64 sequence

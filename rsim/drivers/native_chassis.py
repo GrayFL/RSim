@@ -21,7 +21,8 @@ class NativeRobot:
 
 
 def NativeChassis(*, stm32, imu, imu_mount, directory, scan=None, scan_mount=None,
-                  estimator='wheel_imu', odometry=None, control=None, motion_enabled=False):
+                  estimator='wheel_imu', odometry=None, control=None, motion_enabled=False,
+                  relay_transport=None):
     """Assemble an estimator and native STM32 sink in one event loop.
 
     Hardware settings use start_driver=False to attach to existing native nodes.
@@ -56,6 +57,11 @@ def NativeChassis(*, stm32, imu, imu_mount, directory, scan=None, scan_mount=Non
             settings.pop('port', None)
         if settings:
             raise ValueError('unknown '+kind+' settings: '+str(sorted(settings)))
+        if relay_transport is not None:
+            if start:
+                raise ValueError('topic service cannot start hardware')
+            from .ros_topics import ROS2Topic
+            return ROS2Topic(topic, kind, history=512, transport=relay_transport)
         driver = Driver(package, executable, parameters,
             remappings=remappings(topic), ros_args=ros_args,
             key=('hipnuc-node:' if kind == 'imu' else 'bluesea-port:')+parameters['port'],
@@ -100,3 +106,31 @@ def NativeChassis(*, stm32, imu, imu_mount, directory, scan=None, scan_mount=Non
     controller = ChassisController(pose=estimate.pose, velocity=chassis.velocity,
         motion_enabled=motion_enabled, **(control or {}))
     return NativeRobot(chassis, estimate, controller, scan_signal, scan_filter)
+
+
+def TopicChassis(*, stm32, imu, relay_transport=None, scan=None, **settings):
+    """Subscribe/relay existing ROS topics and control an existing native driver.
+
+    This recipe has no hardware owner, locally or over SSH. Estimator processes
+    and ROS2Topic relays may start; serial/camera/lidar drivers cannot start.
+    """
+    from rsim.transport.descriptor import TransportConfig
+    from .ros_topics import ROS2Topic
+    for name, value in (('stm32', stm32), ('imu', imu), ('scan', scan)):
+        if value is not None and value.get('start_driver', False):
+            raise ValueError(f'{name}.start_driver is forbidden in a topic service; start hardware separately')
+    for name, value in (('imu', imu), ('scan', scan)):
+        forbidden = set(value or {}) - {'topic', 'start_driver', 'filter'}
+        if forbidden:
+            raise ValueError(f'{name} hardware settings belong in the hardware launcher: {sorted(forbidden)}')
+    transport = (TransportConfig(**relay_transport) if isinstance(relay_transport, dict)
+                 else relay_transport or TransportConfig(backend='cyclonedds', domain_id=0))
+    motor = dict(stm32)
+    forbidden = set(motor) - {'namespace', 'start_driver'}
+    if forbidden:
+        raise ValueError('topic service stm32 accepts namespace only, not hardware settings: '+str(sorted(forbidden)))
+    namespace = motor.get('namespace', '/rsim/chassis').rstrip('/')
+    feedback = {'odom': ROS2Topic(namespace+'/odom', 'odom', history=512, transport=transport).odom,
+                'state': ROS2Topic(namespace+'/diagnostics', 'state', history=512, transport=transport).state}
+    motor.update(start_driver=False, remote_clock=True, feedback_sources=feedback)
+    return NativeChassis(stm32=motor, imu=imu, scan=scan, relay_transport=transport, **settings)

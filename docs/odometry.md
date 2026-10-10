@@ -35,15 +35,15 @@ async with Runtime(service):
 
 ## 配置与原生驱动
 
-[配置模板](../examples/control/native_chassis.example.yaml) 通过 `rsim.config.load_chassis(path)` 组装 `NativeChassis`，选择 `wheel_imu` 或 `scan_imu`。它提供 `.pose`、`.velocity`、`.odometry`、`.control` 和 `.chassis.state`。
+[话题配置模板](../examples/control/chassis_topics.example.yaml) 通过 `rsim.config.load_chassis(path, hardware=False)` 组装 `TopicChassis`，选择 `wheel_imu` 或 `scan_imu`。它提供 `.pose`、`.velocity`、`.odometry`、`.control` 和 `.chassis.state`。
 
 ```bash
-python -m rsim.apps.chassis_service --config configs/chassis_ros2.yaml
+python -m rsim.apps.chassis_service --config configs/chassis_topics.yaml
 ```
 
-默认只允许零速。需要运动时增加 `--enable-motion`；若连接已运行的 STM32 节点，该节点也需显式启用运动。`start_driver: false` 直接接入本机原生 ROS 话题；`true` 根据串口、原生 `parameters` 与 `ros_args` 启动驱动。IMU 使用 `rsim_hipnuc`，2D 雷达使用 `bluesea2`。变更 remap 后应保持配置中的 `topic` 与原生输出一致。轮式融合需要 ROS `robot_localization`，二维前端另需 `rtabmap_odom`。
+默认只允许零速。需要运动时增加 `--enable-motion`；已运行的 STM32 节点也需独立启用运动。硬件在其所在机器通过[独立脚本](bringup.md)启动，服务拒绝 `start_driver: true`。IMU 使用 `rsim_hipnuc`，2D 雷达使用 `bluesea2`。变更 remap 后应保持配置中的 `topic` 与原生输出一致。轮式融合需要 ROS `robot_localization`，二维前端另需 `rtabmap_odom`。
 
-内部读取通过 `RosSensor`，没有 ROS2Topic/SharedSensor 中继或大数据 DDS 解耦。只有最终 chassis 服务供独立 Python 客户端连接，部署与键盘操作沿用 [远程控制](remote-control.md)。旧的外置 IMU 平面标定配置仍由 `load_chassis` 分派给旧加载器；它与这里的完整姿态底盘 IMU 配置分开维护。
+控制服务通过 ROS2Topic 中继接入已有 IMU、odom、诊断和可选扫描，以 Signal 传给算法。STM32 命令使用原生服务及跨主机时钟握手；控制应用可与硬件位于不同机器。最终 chassis 服务供独立 Python 客户端连接，见[远程控制](remote-control.md)。库式硬件实验仍可显式使用 `NativeChassis` 和旧标定配方，但它们不作为应用 CLI 的硬件启动后备路径。
 
 建图链路启用 `fusion_parameters` 时也组装同一个 `drivers.Odometry`。本机 ROS 底盘在 `Mapper` 中省略 `connection`，通过 `topics` 指定 IMU、轮速和扫描话题，使用零 chassis 时钟偏移；旧 ROS1 输入仍可显式配置 `connection`。底盘已融合位姿的重复融合不在此输入契约内。
 

@@ -1,0 +1,35 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Fixed Frame: seyond
+    Frame Rate: 20
+    Background Color: 24; 28; 36
+  Displays:
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Bounded point cloud preview
+      Enabled: true
+      Topic:
+        Value: /rsim/preview/points
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 1
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: AxisColor
+      Position Transformer: XYZ
+      Queue Size: 1
+      Decay Time: 0
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 10
+      Pitch: 0.7
+      Yaw: 0.7
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0

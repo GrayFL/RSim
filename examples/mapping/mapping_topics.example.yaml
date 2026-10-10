@@ -1,0 +1,31 @@
+# Algorithm service only. Camera, lidar and chassis ROS publishers run separately.
+mapping:
+  name: mapping
+  database: ../assets/mapping/manual/rtabmap.db
+  topics:
+    points: /iv_points
+    camera_prefix: /rsim/d435
+    imu: /rsim/chassis/imu/data
+    odom: /rsim/chassis/odom
+    scan: /rsim/chassis/scan_raw
+  # Replace all three mounts with measured graphmap poses.
+  mounts:
+    body_lidar:
+      wrd_frame: base_footprint
+      ego_frame: lidar3d
+      position: [0, 0, 0]
+      rotation: [0, 0, 0, 1]
+    body_imu:
+      wrd_frame: base_footprint
+      ego_frame: imu_frame
+      position: [0, 0, 0]
+      rotation: [0, 0, 0, 1]
+    body_camera:
+      wrd_frame: base_footprint
+      ego_frame: d435_link
+      position: [0, 0, 0]
+      rotation: [0, 0, 0, 1]
+  timing:
+    lidar: {offset_s: 0.0}  # actual device-clock -> ROS system-time offset
+    chassis: {offset_s: 0.0}
+  map_options: {keyframe_hz: 1.0}

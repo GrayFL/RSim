@@ -1,13 +1,17 @@
 """SDL window worker. No ROS, chassis client, or command transport imports."""
 
 import asyncio
+import faulthandler
 import json
+import logging
 import math
 import os
 import signal
 import time
 
 from rsim.core.metronome import Metronome
+
+logger = logging.getLogger(__name__)
 
 
 class WindowInput:
@@ -18,6 +22,12 @@ class WindowInput:
         self.focused = self.connected = self.quit = False
         self.space = False
         self.brake = True
+        self.exit_reason = None
+
+    def request_quit(self, reason):
+        self.quit = True
+        self.exit_reason = reason
+        self.stop()
 
     def stop(self):
         self.blocked.update(self.keys)
@@ -45,8 +55,7 @@ class WindowInput:
             if key == "space":
                 self.space = False
         elif key == "esc":
-            self.quit = True
-            self.stop()
+            self.request_quit("escape key")
         elif key == "space":
             self.space = True
             self.stop()
@@ -69,6 +78,7 @@ class WindowInput:
             brake=self.brake,
             quit=self.quit,
             focused=self.focused,
+            exit_reason=self.exit_reason,
             at=time.monotonic(),
         )
 
@@ -141,13 +151,16 @@ class WindowPanel:
         self.screen.fill(self.background)
         self.text("RSIM / 底盘控制", 24, 18, 28)
         connected = view.get("connected", False)
-        mode = "ZERO OUTPUT" if view.get("dry_run", True) else "LIVE OUTPUT"
+        fault = view.get("fault")
+        mode = "OUTPUT DISABLED" if fault else ("ZERO OUTPUT" if view.get("dry_run", True) else "LIVE OUTPUT")
         self.text(
-            mode, 544, 26, 20, self.amber if view.get("dry_run", True) else self.accent
+            mode, 544, 26, 20, self.amber if fault or view.get("dry_run", True) else self.accent
         )
         status = "连接中 / CONNECTING"
         if connected:
             status = "已连接 / CONNECTED" if inputs.focused else "失焦制动 / PAUSED"
+        if fault:
+            status = "重连中 / RECONNECTING" if view.get("reconnecting") else "控制中止 / CONTROL FAULT"
         self.text(
             status,
             24,
@@ -225,18 +238,22 @@ class WindowPanel:
                 f"POSE  x {pose[0]:+.3f} m   y {pose[1]:+.3f} m   yaw {pose[2]:+.1f}°"
             )
         self.text(pose_text, 24, 374, 20)
-        if view.get("dry_run", True):
+        if fault:
+            self.text(str(fault)[:78], 24, 407, 16, self.amber)
+        elif view.get("dry_run", True):
             self.text(
                 "发送速度始终为零 / commands remain zero", 24, 407, 16, self.amber
             )
         else:
             self.text("速度条显示模型指令，并非实测轮速", 24, 407, 16, self.muted)
-        self.text("失焦即制动 · 重新按键继续 · ESC 关闭", 24, 444, 16, self.muted)
+        self.text("等待重连 · 恢复后松开按键再按 · ESC 关闭" if view.get("reconnecting") else
+                  "控制已中止 · 关闭窗口后重新连接 · ESC 关闭" if fault else
+                  "失焦即制动 · 重新按键继续 · ESC 关闭", 24, 444, 16, self.muted)
         # X forwarding benefits from updating only regions whose displayed
         # values changed, especially while the vehicle is stationary.
         regions = {
             "header": (
-                (connected, inputs.focused, mode, view.get("endpoint")),
+                (connected, inputs.focused, mode, view.get("endpoint"), fault, view.get("reconnecting")),
                 (0, 0, 760, 98),
             ),
             "keys": ((tuple(sorted(inputs.keys)), inputs.brake), (24, 98, 260, 256)),
@@ -256,7 +273,7 @@ class WindowPanel:
                 (296, 200, 440, 154),
             ),
             "pose": (pose_text, (0, 354, 760, 50)),
-            "footer": (mode, (0, 404, 760, 76)),
+            "footer": ((mode, fault, view.get("reconnecting")), (0, 404, 760, 76)),
         }
         dirty = [
             rect
@@ -279,8 +296,12 @@ async def window_loop(channel, title, fonts, render_hz):
         # Avoid SDL choosing Wayland ahead of a forwarded X display.
         if os.environ.get("SSH_CONNECTION") and os.environ.get("DISPLAY"):
             os.environ.setdefault("SDL_VIDEODRIVER", "x11")
+        logger.info("Initializing window DISPLAY=%r WAYLAND_DISPLAY=%r SDL_VIDEODRIVER=%r",
+                    os.environ.get("DISPLAY"), os.environ.get("WAYLAND_DISPLAY"), os.environ.get("SDL_VIDEODRIVER"))
         pg.display.init()
         pg.font.init()
+        logger.info("Window display initialized backend=%s DISPLAY=%r WAYLAND_DISPLAY=%r",
+                    pg.display.get_driver(), os.environ.get("DISPLAY"), os.environ.get("WAYLAND_DISPLAY"))
         display = os.environ.get("DISPLAY", "")
         if (
             pg.display.get_driver() == "x11"
@@ -300,6 +321,7 @@ async def window_loop(channel, title, fonts, render_hz):
         inputs = WindowInput()
         inputs.focus(bool(pg.key.get_focused()))
         view = {}
+        connection_id = None
         # First presentation can initialize a WSLg compositor / remote surface.
         # Finish it before announcing ready; no controller is running yet.
         panel.render(view, inputs)
@@ -324,7 +346,7 @@ async def window_loop(channel, title, fonts, render_hz):
                 if event.type == pg.WINDOWEXPOSED:
                     panel.previous.clear()
                 elif event.type in (pg.QUIT, pg.WINDOWCLOSE):
-                    inputs.key("esc", True)
+                    inputs.request_quit("window close event")
                 elif event.type in (
                     pg.WINDOWFOCUSLOST,
                     pg.WINDOWMINIMIZED,
@@ -346,16 +368,19 @@ async def window_loop(channel, title, fonts, render_hz):
                     break
                 last_parent = time.monotonic()
                 if view.get("close"):
-                    return
+                    return "parent requested cleanup"
+                if view.get("connection_id") != connection_id:
+                    inputs.connect(False, held())
+                    connection_id = view.get("connection_id")
                 inputs.connect(bool(view.get("connected")), held())
             if time.monotonic() - last_parent > 2:
-                return  # parent stopped or died: don't leave an orphan window
+                raise TimeoutError("no parent heartbeat for more than 2s")
             try:
                 channel.send(json.dumps(inputs.snapshot()).encode())
             except BlockingIOError:
                 pass
             if inputs.quit:
-                return
+                return inputs.exit_reason
             now = time.monotonic()
             if now - last_render >= 1 / render_hz:
                 panel.render(view, inputs)
@@ -370,12 +395,18 @@ async def window_loop(channel, title, fonts, render_hz):
 def run_window(channel, title, fonts, render_hz):
     # The parent owns Ctrl-C and shuts down commands before the display.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s [%(process)d] %(name)s: %(message)s")
+    faulthandler.enable()
     try:
-        asyncio.run(window_loop(channel, title, fonts, render_hz))
+        reason = asyncio.run(window_loop(channel, title, fonts, render_hz))
+        logger.info("Window exit reason=%s", reason)
     except Exception as error:
+        logger.exception("Window failed")
         try:
-            channel.send(json.dumps({"error": f"pygame window: {error}"}).encode())
+            channel.send(json.dumps({"error": f"pygame window: {type(error).__name__}: {error}"}).encode())
         except OSError:
             pass
+        raise
     finally:
         channel.close()

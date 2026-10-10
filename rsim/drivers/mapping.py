@@ -12,11 +12,11 @@ class MappingProvider(MappingSave, SharedProvider):
     pass
 
 
-def Mapper(*, connection=None, lidar_ip, mounts, database, name='mapping', history=3,
+def Mapper(*, connection=None, lidar_ip=None, mounts, database, name='mapping', history=3,
            transport=None, timing=None, allow_estimated_timing=False,
            topics=None, camera_parameters=None, lidar_parameters=None,
            lio_parameters=None, rtabmap_parameters=None, cloud_filter=None, map_options=None,
-           scan2d_parameters=None, fusion_parameters=None):
+           scan2d_parameters=None, fusion_parameters=None, start_drivers=False):
     """Start a read-only mapping stack; no chassis velocity writer is created.
 
     Mounts are graphmap Pose constructor dictionaries for body_lidar, body_imu,
@@ -43,7 +43,11 @@ def Mapper(*, connection=None, lidar_ip, mounts, database, name='mapping', histo
     database = str(Path(database).expanduser().resolve())
     if fusion_parameters is not None and scan2d_parameters is None:
         raise ValueError('mapping fusion requires scan2d_parameters and body_scan')
-    settings = dict(fusion_parameters=fusion_parameters, scan2d_parameters=scan2d_parameters, connection=asdict(connection) if connection else None, lidar_ip=lidar_ip, mounts=mounts, database=database,
+    if not start_drivers and (camera_parameters or lidar_parameters):
+        raise ValueError('configure camera/lidar parameters in their hardware launchers, not the mapping service')
+    if start_drivers and not lidar_ip:
+        raise ValueError('explicit hardware startup requires lidar_ip')
+    settings = dict(start_drivers=start_drivers, fusion_parameters=fusion_parameters, scan2d_parameters=scan2d_parameters, connection=asdict(connection) if connection else None, lidar_ip=lidar_ip, mounts=mounts, database=database,
         name=name, timing=timing, topics=topics or {}, camera_parameters=camera_parameters or {},
         lidar_parameters=lidar_parameters or {}, lio_parameters=lio_parameters or {},
         rtabmap_parameters=rtabmap_parameters or {}, cloud_filter=cloud_filter or {}, map_options=map_options or {})
@@ -58,7 +62,8 @@ def Mapper(*, connection=None, lidar_ip, mounts, database, name='mapping', histo
 
 def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topics,
                   camera_parameters, lidar_parameters, lio_parameters, rtabmap_parameters, cloud_filter,
-                  map_options=None, input_source=None, scan2d_parameters=None, fusion_parameters=None):
+                  map_options=None, input_source=None, scan2d_parameters=None, fusion_parameters=None,
+                  start_drivers=False):
     """Assemble the native backend with live inputs or an injected Component.
 
     An injected source owns its RosContext, exposes prefix/diagnostics(), and
@@ -87,8 +92,10 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
         raise ValueError('mapping mounts must be SE(3) poses with parent base_footprint')
     T_base_lidar, T_base_imu = geometry['body_lidar'], geometry['body_imu']
     T_imu_lidar = ~T_base_imu * T_base_lidar
-    camera_prefix = prefix + '/camera/d435'
-    topics = {'imu': '/imu_data', 'odom': '/odom_raw', 'scan': '/scan', **topics}
+    camera_prefix = topics.get('camera_prefix', prefix + '/camera/d435' if start_drivers else '/rsim/d435')
+    defaults = ({'imu': '/imu_data', 'odom': '/odom_raw', 'scan': '/scan'} if connection else
+                {'imu': '/rsim/chassis/imu/data', 'odom': '/rsim/chassis/odom', 'scan': '/rsim/chassis/scan'})
+    topics = {'points': prefix+'/raw/points' if start_drivers else '/iv_points', **defaults, **topics}
     topics.update(lidar_frame=T_base_lidar.ego_frame, imu_frame=T_base_imu.ego_frame)
     directory = Path(database).parent
     directory.mkdir(parents=True, exist_ok=True)
@@ -108,11 +115,11 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
             'enable_sync': False, 'publish_tf': True,
             'depth_module.depth_profile': '640x480x15', 'rgb_camera.color_profile': '640x480x15',
             **camera_parameters}, key='driver:d435:' + str(camera_parameters.get('serial_no', '')).lstrip('_'),
-            remappings={'__ns': prefix + '/camera', '__node': 'd435'}, log_path=directory/'camera.log')
+            remappings={'__ns': prefix + '/camera', '__node': 'd435'}, log_path=directory/'camera.log') if start_drivers else None
         lidar = Driver('seyond', 'seyond_node', {
             'lidar_ip': lidar_ip, 'frame_topic': prefix + '/raw/points',
             'frame_id': T_base_lidar.ego_frame, 'coordinate_mode': 3, **lidar_parameters},
-            key='driver:robin:' + lidar_ip, log_path=directory/'lidar.log')
+            key='driver:robin:' + lidar_ip, log_path=directory/'lidar.log') if start_drivers else None
         bridge = Ros1Bridge(SSHConfig(**connection), log_path=directory/'chassis.log') if connection is not None else None
         inputs = MappingInputs(ros, bridge,
             prefix=prefix, lidar_driver=lidar, camera_driver=camera,

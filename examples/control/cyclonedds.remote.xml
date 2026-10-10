@@ -8,6 +8,8 @@
       <Interfaces>
         <NetworkInterface address="${RSIM_DDS_LOCAL_IP:?Set RSIM_DDS_LOCAL_IP}" />
       </Interfaces>
+      <!-- Optional port-preserving NAT address; binding stays on the local NIC. -->
+      <ExternalNetworkAddress>${RSIM_DDS_EXTERNAL_IP:-auto}</ExternalNetworkAddress>
       <AllowMulticast>false</AllowMulticast>
       <Transport>udp</Transport>
       <MaxMessageSize>1200 B</MaxMessageSize>

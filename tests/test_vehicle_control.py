@@ -1,5 +1,6 @@
 import asyncio
 import math
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -111,5 +112,56 @@ def test_listener_failure_stops_manual_output_without_application_cleanup():
             await asyncio.sleep(0.4)
             assert controller._failure is not None
             assert source.command == VelocityCommand()
+
+    asyncio.run(run())
+
+
+def test_slow_ack_does_not_stall_model_or_queue_old_key_commands():
+    from rsim.components.teleoperation import Teleoperation
+    from rsim.core.component import Component, PrimaryComponent
+    from rsim.core import CommandSink, VelocityCommand
+
+    class Keys(PrimaryComponent):
+        async def open(self):
+            self.value = dict(keys=["w"], brake=False, quit=False)
+            await self.sample()
+            self.task("input", self.sample, hz=100)
+
+        async def sample(self):
+            await self.publish(dict(self.value), stamp_ns=time.monotonic_ns(), clock="host:monotonic")
+
+    class SlowSink(Component):
+        def __init__(self):
+            super().__init__()
+            self.velocity = CommandSink(self, "velocity", self.apply, fallback=VelocityCommand())
+            self.entered, self.release = asyncio.Event(), asyncio.Event()
+            self.commands = []
+
+        async def apply(self, envelope):
+            self.entered.set()
+            await self.release.wait()
+            self.commands.append(envelope)
+
+    async def run():
+        keys, sink = Keys(), SlowSink()
+        control = Teleoperation(keys, sink.velocity,
+                                parameters=VehicleParameters(command_ttl=.4))
+        async with Runtime(control):
+            await asyncio.wait_for(sink.entered.wait(), 1)
+            first = control.state.frames[-1].sequence
+            # ACK delay exceeds the model's 200ms loop guard. Sampling and
+            # braking must continue while that one command awaits its reply.
+            await asyncio.sleep(.23)
+            keys.value = dict(keys=[], brake=True, quit=False)
+            await asyncio.sleep(.05)
+            assert control.state.frames[-1].sequence >= first + 5
+            assert control.state.frames[-1].data['linear_x'] == 0
+            assert not sink.commands
+            sink.release.set()
+            await asyncio.sleep(.12)
+            assert control._failure is None
+            assert sink.commands[0].value.linear_x > 0
+            assert len(sink.commands) >= 2
+            assert all(c.value == VelocityCommand() for c in sink.commands[1:])
 
     asyncio.run(run())
