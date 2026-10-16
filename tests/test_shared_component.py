@@ -34,6 +34,59 @@ def view(key):
                                           'map': PortSpec(clock='test', history_capacity=4)})
 
 
+def test_provider_failure_log_survives_worker_cleanup(tmp_path):
+    from rsim.core import ComponentError
+
+    class FailingSource(Component):
+        def __init__(self):
+            super().__init__()
+            self.pose = self.signal('pose', clock='test')
+
+        async def open(self):
+            self.task('read-input', self.tick, hz=20)
+
+        async def tick(self):
+            if (tmp_path/'fail').exists():
+                raise RuntimeError('mapping input stopped: imu')
+            await self.pose.publish(1, stamp_ns=1, clock='test')
+
+    async def run():
+        log = tmp_path/'session'/'provider.log'
+        provider = SharedProvider(FailingSource(), key='failure:'+uuid.uuid4().hex, log_path=log)
+        async with Runtime(provider):
+            frame = await provider.pose.get(timeout=10)
+            (tmp_path/'fail').touch()
+            with pytest.raises(ComponentError):
+                while True:
+                    frame = await provider.pose.get(after=frame.sequence, timeout=10)
+        async with asyncio.timeout(10):
+            while provider.directory.exists():
+                await asyncio.sleep(.05)
+        text = log.read_text()
+        assert 'Shared provider failed' in text
+        assert 'RuntimeError: mapping input stopped: imu' in text
+        assert 'Traceback' in text
+
+    asyncio.run(run())
+
+
+def test_port_error_keeps_original_exception_chain():
+    from types import SimpleNamespace
+    from rsim.core import ComponentError
+    from rsim.runtime.port_binding import PortBinding
+    try:
+        try:
+            raise RuntimeError('Super-LIO lidar corrections stopped updating')
+        except RuntimeError as cause:
+            raise ComponentError('component task failed') from cause
+    except ComponentError as error:
+        binding = object.__new__(PortBinding)
+        binding.records = {'pose': {'endpoint': SimpleNamespace(_failure=error)}}
+        reported = binding.errors()['pose']
+    assert 'RuntimeError: Super-LIO lidar corrections stopped updating' in reported
+    assert 'ComponentError: component task failed' in reported
+
+
 @pytest.mark.parametrize('placed', [False, True])
 def test_exact_dynamic_ports_retained_identity_and_independent_leases(placed):
     async def run():

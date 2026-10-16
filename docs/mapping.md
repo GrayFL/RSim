@@ -4,6 +4,14 @@
 
 默认只订阅已经运行的硬件 ROS2 话题。相机/雷达由其所在机器的硬件脚本独立启动；建图服务只启动 Super-LIO、RTAB-Map 和可选里程计算法。应用入口 `python -m rsim.apps.mapping_service` 不允许自动启动硬件或 SSH 连接；脚本、配方与查看器见[独立启动说明](bringup.md)。低层 `drivers.Mapper(start_drivers=True)` 保留为显式硬件实验接口。
 
+建图不订阅底盘控制会话或运动互锁状态。急停、防撞条拒绝速度命令本身不会关闭建图；只要硬件继续发布 IMU、激光和相机数据，建图仍可运行。若硬件断电、必要输入真正停更或算法失败，当前建图会话会报错结束，不自动续接一个可能已失去时间连续性的地图。
+
+RGB/激光配对、完整位姿图响应轮询、地图重建与存档分别由独立任务执行。较慢的地图重建不阻塞新的关键帧提交；超过同步等待期限的扫描被丢弃并计入 `expired_scans`。建图服务自身只读取 pose/status，地图客户端按需订阅 map/rgb_map。
+
+原生 ROS2 模式下，Super-LIO 直接订阅配置的 IMU 话题，积分输入不经过 Python 的解码/重发；ROS1 或录制输入仍使用时间对齐后的中继。Python 接入保留有界的顺序消息队列并批量处理，以应对批量到达，避免只取最新帧而丢掉中间样本；状态中的 `source_queue_drops` 与 `max_source_gap_s` 分别记录 Python 接入队列丢帧和该接入观察到的源时间戳间隔。独立建图 CLI 默认将子进程的 BLAS 线程数设为1，可用 `--blas-threads` 调整，以减少矩阵运算和高频传感器任务的线程竞争。
+
+排查退出时查看本次输出目录中的 `provider.log`、`lio.log`、`rtabmap.log`；运行期失败还会保存 `failure.json`，包含最后收到的输入年龄、队列与图响应状态。`provider.log` 保留子进程原始异常和调用栈，不随共享内存清理而删除。终端错误也保留底层异常链。
+
 ## 数据流与接口
 
 ```mermaid
@@ -196,6 +204,13 @@ mapping:
   map_options:
     resolution: 0.05
     keyframe_hz: 2.0
+    adaptive_keyframes:
+      min_hz: 0.1
+      linear_speed_m_s: 0.3
+      angular_speed_rad_s: 0.5
+      window_s: 0.5
+      linear_deadband_m_s: 0.01
+      angular_deadband_rad_s: 0.02
     max_rgb_dt_s: 0.06
     occlusion_cell: 2
     occlusion_tolerance_m: 0.05
@@ -207,6 +222,30 @@ mapping:
 函数形式为 `rsim.drivers.Mapper(connection=..., lidar_ip=..., mounts=..., database=..., ...)`，关键字与 YAML `mapping` 内一致，`geometry_file` 仅由配置加载器处理。同名 provider 的配置必须一致；冲突会拒绝启动，不会悄悄复用另一组外参或数据库。
 
 `body_camera` 对应 RealSense 的 `camera_link`，**不是光学帧**。彩色光学轴由驱动 TF 提供，不能把同一组 Euler 值重复应用于光学帧。所有 mount 必须是 parent=`base_footprint` 的 SE(3) graphmap Pose。Seyond 设置 `coordinate_mode=3`，使用 X 前/Y 左/Z 上。外置 IMU 未知外参不能用单位旋转冒充标定；该原型直接选择底盘 IMU 输入。
+
+## 按运动速度选择关键帧
+
+`map_options.adaptive_keyframes` 启用速度自适应采样，空字典 `{}` 使用上例中的默认值。`keyframe_hz` 是提交频率上限；省略 `adaptive_keyframes` 或设为 `null` 则保留固定频率，已有配置无需迁移。Python 工厂接收同一个 `map_options` 字典，客户端接口保持不变。
+
+频率与窗口必须为有限正数，且 `min_hz <= keyframe_hz`；两种抖动阈值须非负并小于对应参考速度。无效配置会拒绝启动。
+
+策略从局部 Super-LIO 的 `T_lio_base` 位姿历史估计最近 `window_s` 秒的平移速度大小和三维角速度大小。使用 graphmap 相对 Pose 的旋转角，不直接相减 yaw，因此倒退、左右原地旋转和跨越 ±π 都能处理。全局回环修正不参与速度估计；它仍通过完整图正常更新地图。
+
+设线速度为 `v`、角速度为 `w`，按以下规则确定候选帧频率：
+
+```text
+u = clamp(max((v - linear_deadband_m_s) / (linear_speed_m_s - linear_deadband_m_s),
+              (w - angular_deadband_rad_s) / (angular_speed_rad_s - angular_deadband_rad_s)), 0, 1)
+hz = min_hz + (keyframe_hz - min_hz) * u
+```
+
+两种速度任意一种达到参考值就使用上限；静止或两者都在抖动阈值内时使用下限。上例静止时每 10 秒最多提交一次，达到 0.3 m/s 或 0.5 rad/s 时最多每秒两次。速度窗口会平滑响应，窗口过长会推迟加减速响应；它估计窗口内净位移，不是高频振动的累计路程。历史尚未覆盖窗口或无法插值时按上限采样，并报告 `history_ready=false`，不把未知运动当成静止。首个有效帧直接提交以建立地图。
+
+筛选发生在 RGB 上色、消息序列化和 RTAB-Map 处理之前。每个候选帧重新计算间隔，加速后无需等待旧的低频期限；按最终配对的 RGB 采集时间戳限速，跳过的扫描不会积压或建立档案。IMU 积分、雷达去畸变、局部里程计、对外 Pose 和健康监测维持原有频率。
+
+这是**候选帧的频率**，不是保证新增节点的频率。RTAB 的 `RGBD/LinearUpdate`、`RGBD/AngularUpdate` 仍会进一步决定是否保留节点；默认 `Rtabmap/DetectionRate='0'` 将时间采样交给此策略，手动设置该参数会再加一层限速。地图只在接受新关键帧或优化图发生变化时重建和保存，图修正不会因静止而暂停。既有数据库和档案不会被压缩或删除，累计空间仍随有效关键帧数量增长。
+
+`mapper.status` 的 `mapping` 字段提供 `target_keyframe_hz`、`keyframe_max_hz`、`keyframe_motion`（窗口速度及可用性）和 `rate_limited_scans`。实际提交/接受数量分别看 `submitted` / `keyframes`。低频时 `mapping_lag_s` 包含等待下一次采样的正常间隔，不应仅凭它或 `rgb_map_age_s` 判定离线；输入新鲜度及 LIO 校正进度仍由独立监测判断。
 
 ## 时间、位姿与数据共享
 

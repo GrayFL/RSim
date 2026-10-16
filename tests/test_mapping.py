@@ -417,3 +417,97 @@ def test_streaming_graph_is_only_a_notification_until_complete_service_replies()
     assert list(io.graphs) == ['authoritative complete graph']
     assert io.graph_completed == io.graph_generation == 1
     assert io.stats['graph_responses'] == 1
+
+
+def test_slow_map_rebuild_does_not_block_input_or_graph_polling(tmp_path):
+    import threading
+    from graphmap.pose import Pose
+    from rsim.core import Component
+    from rsim.adapters.ros2.laser_mapping import LaserMappingIO
+
+    entered, release = threading.Event(), threading.Event()
+    ticks = dict(input=0, poll=0, published=0)
+    ledger = SimpleNamespace(dirty=True, save=lambda path: None)
+    def snapshot(**kwargs):
+        entered.set()
+        assert release.wait(5)
+        ledger.dirty = False
+        return {}
+    ledger.snapshot = snapshot
+    io = LaserMappingIO(ledger=ledger, pose_history=None, keyframe_type=None,
+        camera_type=None, colorize=None, T_base_imu=Pose(), camera_prefix='/camera')
+    async def submit():
+        ticks['input'] += 1
+    def poll():
+        ticks['poll'] += 1
+    async def publish(snapshot):
+        ticks['published'] += 1
+    io.submit_scan, io.poll_graph, io.publish_snapshot = submit, poll, publish
+
+    class Owner(Component):
+        database = str(tmp_path/'map.db')
+        async def open(self):
+            io.owner = self
+            io.start_tasks()
+
+    async def run():
+        async with Runtime(Owner()):
+            try:
+                async with asyncio.timeout(3):
+                    while not entered.is_set():
+                        await asyncio.sleep(.01)
+                    before = dict(ticks)
+                    while ticks['input'] < before['input']+4 or ticks['poll'] < before['poll']+4:
+                        await asyncio.sleep(.01)
+                assert ticks['published'] == 0
+            finally:
+                release.set()
+            async with asyncio.timeout(3):
+                while not ticks['published']:
+                    await asyncio.sleep(.01)
+    asyncio.run(run())
+
+
+def test_expired_scans_are_dropped_before_waiting_for_rgb(monkeypatch):
+    from graphmap.pose import Pose
+    from rsim.adapters.ros2.laser_mapping import LaserMappingIO
+    io = LaserMappingIO(ledger=None, pose_history=None, keyframe_type=None,
+        camera_type=None, colorize=None, T_base_imu=Pose(), camera_prefix='/camera', max_wait_s=5)
+    io.scans.extend([('old', 1.), ('fresh', 9.)])
+    monkeypatch.setattr(time, 'monotonic', lambda: 10.)
+    asyncio.run(io.submit_scan())
+    assert list(io.scans) == [('fresh', 9.)]
+    assert io.stats['expired_scans'] == 1
+
+
+def test_imu_ingress_retains_a_burst_in_source_time_order():
+    from sensor_msgs.msg import Imu
+    from rsim.core import Component
+    from rsim.adapters.ros2.sensor import RosSensor
+
+    callbacks, depths = [], []
+    def subscribe(cls, topic, callback, qos):
+        callbacks.append(callback)
+        depths.append(qos.depth)
+        return object()
+    ros = Component()
+    ros.node = SimpleNamespace(create_subscription=subscribe, destroy_subscription=lambda sub: None)
+    source = RosSensor('/imu', 'imu', clock='ros:system', ros=ros,
+                       history=64, queue_size=64, batch_size=32, hz=500)
+    async def run():
+        async with Runtime(source):
+            # A 200 Hz stream delivered in one scheduling/network burst.
+            for i in range(50):
+                msg = Imu()
+                msg.header.stamp.sec = 1
+                msg.header.stamp.nanosec = i*5_000_000
+                callbacks[0](msg)
+            await source.convert()
+            assert len(source.pending) == 18  # Bounded work, with the remainder retained.
+            frame = await source.output.get(timeout=2)
+            while frame.sequence < 50:
+                frame = await source.output.get(after=frame.sequence, timeout=2)
+            assert [f.stamp_ns for f in source.output.frames] == [10**9+i*5_000_000 for i in range(50)]
+            assert source.dropped == 0
+            assert depths == [64]
+    asyncio.run(run())

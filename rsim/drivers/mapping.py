@@ -22,6 +22,8 @@ def Mapper(*, connection=None, lidar_ip=None, mounts, database, name='mapping', 
     Mounts are graphmap Pose constructor dictionaries for body_lidar, body_imu,
     body_camera; integrated scan odometry additionally needs body_scan. Explicitly opt into reception-derived clock offsets for a
     prototype, or supply measured offsets for both source clocks.
+    ``map_options['adaptive_keyframes']`` enables motion-dependent sampling;
+    ``map_options['keyframe_hz']`` remains the submission rate ceiling.
     """
     if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', name):
         raise ValueError('mapping name must be a ROS-compatible identifier')
@@ -57,7 +59,8 @@ def Mapper(*, connection=None, lidar_ip=None, mounts, database, name='mapping', 
     def factory():
         return mapping_graph(**settings)
     return MappingProvider(factory=factory, ports=mapping_ports(history), key='mapper:' + name,
-        interface_version='mapping-ports-v1', transport=transport, provider_version=signature)
+        interface_version='mapping-ports-v1', transport=transport, provider_version=signature,
+        log_path=Path(database).parent/'provider.log')
 
 
 def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topics,
@@ -77,6 +80,7 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
     from rsim.adapters.ros2.mapping_output import MappingOutput
     from rsim.adapters.ros2.laser_mapping import LaserMappingIO
     from rsim.components.mapping import MapLedger, LaserKeyframe
+    from rsim.components.keyframe_rate import MotionKeyframeRate
     from rsim.components.projection import PoseHistory, PinholeCamera, colorize_laser
     import numpy as np
 
@@ -133,7 +137,11 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
                              directory=directory, parameters=scan2d_parameters,
                              odom_frame=frames['odom'] if fusion_parameters is not None else None)
     native_lio = {
-        'lio.ros.lidar_topic': prefix + '/lidar', 'lio.ros.imu_topic': prefix + '/imu',
+        'lio.ros.lidar_topic': prefix + '/lidar',
+        # Native ROS IMU is already in the system clock domain. Its integration
+        # must not depend on a Python decode/re-encode round trip competing with
+        # map assembly. Recorded/ROS1 ingress still needs the aligned relay.
+        'lio.ros.imu_topic': topics['imu'] if connection is None and input_source is None else prefix + '/imu',
         'lio.ros.reliable_lidar': True,
         # VELO16 selects the xyz/intensity/time wire layout; hardware remains Seyond.
         'lio.sensor.lidar_type': 3, 'lio.sensor.imu_type': 1,
@@ -216,6 +224,10 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
         'rtab_feature_depth': 'projected lidar' if native_rtabmap['gen_depth'] else 'none',
     }
     options = dict(map_options or {})
+    pose_history = PoseHistory(capacity=4096)
+    adaptive = options.pop('adaptive_keyframes', None)
+    rate_policy = (MotionKeyframeRate(pose_history, max_hz=options.get('keyframe_hz', 2.), **adaptive)
+                   if adaptive is not None else None)
     fusion = None
     if fusion_parameters is not None:
         from .odometry import Odometry
@@ -226,9 +238,10 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
             directory=directory, parameters=fusion_parameters, pose_history=PoseHistory(capacity=4096),
             covariance_history=SampleHistory())
     ledger = MapLedger(resolution=options.pop('resolution', .05), frame_id=frames['map'])
-    mapping = LaserMappingIO(ledger=ledger, pose_history=PoseHistory(capacity=4096), keyframe_type=LaserKeyframe,
+    mapping = LaserMappingIO(ledger=ledger, pose_history=pose_history, keyframe_type=LaserKeyframe,
         camera_type=PinholeCamera, colorize=colorize_laser, T_base_imu=T_base_imu,
-        camera_prefix=camera_prefix, allocator=np.empty, fusion=fusion, rectify_rgb=rectify_rgb, **options)
+        camera_prefix=camera_prefix, allocator=np.empty, fusion=fusion, rectify_rgb=rectify_rgb,
+        rate_policy=rate_policy, **options)
     result = MappingOutput(inputs, lio, rtabmap, frames=frames, T_base_imu=T_base_imu,
                          database=database, assumptions=assumptions, allocator=np.empty, mapping=mapping)
 

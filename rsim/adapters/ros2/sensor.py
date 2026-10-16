@@ -1,4 +1,5 @@
 from collections import deque
+import copy
 import time
 from rsim.core import PrimaryComponent
 from .context import RosContext
@@ -10,15 +11,21 @@ from .conversions import (
 class RosSensor(PrimaryComponent):
 
     def __init__(
-            self, topic, kind, *, clock, driver=None, hz=200, history=16, ros=None
+            self, topic, kind, *, clock, driver=None, hz=200, history=16, ros=None,
+            queue_size=2, batch_size=1
         ):
+        if not isinstance(queue_size, int) or isinstance(queue_size, bool) or queue_size < 1:
+            raise ValueError('queue_size must be a positive integer')
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 1:
+            raise ValueError('batch_size must be a positive integer')
         children = (ros if ros is not None else RosContext(), ) + ((driver, ) if driver else ())
         super().__init__(
             *children, key=f"ros:{kind}:{topic}", history=history, output_name=kind, clock=clock
             )
         setattr(self, kind, self.output)
         self.topic, self.kind, self.clock, self.hz = topic, kind, clock, hz
-        self.pending = deque(maxlen=2)
+        self.pending = deque(maxlen=queue_size)
+        self.batch_size = batch_size
         self.subscription = None
         self.dropped = 0
 
@@ -29,6 +36,8 @@ class RosSensor(PrimaryComponent):
             self.kind,
             self.clock,
             self.hz,
+            self.pending.maxlen,
+            self.batch_size,
             tuple(c.configuration() for c in self.children)
             )
 
@@ -44,30 +53,31 @@ class RosSensor(PrimaryComponent):
                 self.dropped += 1
             self.pending.append((msg, time.time_ns()))
 
+        qos = copy.copy(qos_profile_sensor_data)
+        qos.depth = max(qos.depth, self.pending.maxlen)
         self.subscription = self.children[0].node.create_subscription(
             {"points": PointCloud2, "image": RosImage, "imu": Imu,
              "scan": LaserScan, "odom": Odometry,
              "state": DiagnosticArray}[self.kind],
             self.topic,
             receive,
-            qos_profile_sensor_data
+            qos
             )
         self.task("convert", self.convert, hz=self.hz)
 
     async def convert(self):
-        if not self.pending:
-            return
-        msg, received_ns = self.pending.popleft()
-        data = {"points": pointcloud_array, "image": image_array,
-                "imu": imu_data, "scan": scan_data, "odom": odom_data,
-                "state": diagnostics_data}[self.kind](msg)
-        await self.publish(
-            data,
-            stamp_ns=msg.header.stamp.sec * 10**9
-            + msg.header.stamp.nanosec,
-            clock=self.clock,
-            received_ns=received_ns
-            )
+        for _ in range(min(len(self.pending), self.batch_size)):
+            msg, received_ns = self.pending.popleft()
+            data = {"points": pointcloud_array, "image": image_array,
+                    "imu": imu_data, "scan": scan_data, "odom": odom_data,
+                    "state": diagnostics_data}[self.kind](msg)
+            await self.publish(
+                data,
+                stamp_ns=msg.header.stamp.sec * 10**9
+                + msg.header.stamp.nanosec,
+                clock=self.clock,
+                received_ns=received_ns
+                )
 
     async def close(self):
         if self.subscription is not None:

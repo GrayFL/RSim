@@ -1,6 +1,7 @@
 """Execute a trusted recipe only in the explicitly chosen provider environment."""
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import signal
@@ -59,6 +60,11 @@ async def run(directory, listener):
             done, _ = await asyncio.wait((stop_task, failure), return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 await task
+        except Exception:
+            # Record the cause before closing the registry. Clients may lose
+            # their socket while native children are still being cleaned up.
+            logging.getLogger(__name__).exception('Shared provider failed: %s', component.__class__.__name__)
+            raise
         finally:
             stop_task.cancel()
             failure.cancel()

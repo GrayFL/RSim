@@ -114,7 +114,9 @@ class MappingInputs(Component):
             if timing['chassis'].get('offset_s') != 0:
                 raise ValueError('native ROS chassis timestamps require offset_s=0')
             self.remote = {name: RosSensor(topics[key], kind, ros=ros,
-                clock='ros:system', hz=500, history=history) for name, key, kind in
+                clock='ros:system', hz=500, history=history,
+                queue_size=history if name == 'imu' else 2,
+                batch_size=32 if name == 'imu' else 1) for name, key, kind in
                 (('imu', 'imu', 'imu'), ('wheel_odom', 'odom', 'odom'), ('scan', 'scan', 'scan'))}
         super().__init__(ros, *(driver for driver in (lidar_driver, camera_driver) if driver is not None),
                          inputs=tuple(source.output for source in self.remote.values()))
@@ -125,6 +127,8 @@ class MappingInputs(Component):
         self.counts = dict.fromkeys(('lidar', *self.remote), 0)
         self.received = {}
         self.max_gap = {}
+        self.source_stamps = {}
+        self.max_source_gap = {}
         self.dropped = 0
         self.publishers = {}
 
@@ -183,6 +187,11 @@ class MappingInputs(Component):
                     continue
                 self.last[name] = frame.sequence
                 self.record_received(name)
+                previous = self.source_stamps.get(name)
+                if previous is not None:
+                    self.max_source_gap[name] = max(self.max_source_gap.get(name, 0.),
+                                                    (frame.stamp_ns-previous)*1e-9)
+                self.source_stamps[name] = frame.stamp_ns
                 source_time = frame.stamp_ns * 1e-9
                 if name == 'imu':
                     target = self.chassis_clock.observe(source_time, frame.received_ns * 1e-9)
@@ -216,7 +225,9 @@ class MappingInputs(Component):
         return dict(counts=dict(self.counts), lidar_clock=self.lidar_clock.report(),
                     chassis_clock=self.chassis_clock.report(), dropped_lidar=self.dropped,
                     input_age_s={key: time.monotonic() - value for key, value in self.received.items()},
-                    max_input_gap_s=dict(self.max_gap))
+                    max_input_gap_s=dict(self.max_gap), max_source_gap_s=dict(self.max_source_gap),
+                    source_queue_drops={key: source.dropped for key, source in self.remote.items()
+                                        if hasattr(source, 'dropped')})
 
     async def close(self):
         if hasattr(self, 'subscription'):

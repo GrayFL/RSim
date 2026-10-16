@@ -28,4 +28,12 @@ mapping:
   timing:
     lidar: {offset_s: 0.0}  # actual device-clock -> ROS system-time offset
     chassis: {offset_s: 0.0}
-  map_options: {keyframe_hz: 1.0}
+  map_options:
+    keyframe_hz: 1.0  # Upper bound, including when accelerating or rotating.
+    adaptive_keyframes:
+      min_hz: 0.1  # One candidate every 10 seconds at rest.
+      linear_speed_m_s: 0.3  # Either speed reaches the upper bound.
+      angular_speed_rad_s: 0.5
+      window_s: 0.5
+      linear_deadband_m_s: 0.01
+      angular_deadband_rad_s: 0.02

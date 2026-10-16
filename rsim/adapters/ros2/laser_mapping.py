@@ -2,6 +2,7 @@
 import asyncio
 from collections import deque
 import copy
+import math
 from pathlib import Path
 import time
 
@@ -22,9 +23,10 @@ class LaserMappingIO:
     """ROS wiring only; geometry/provenance algorithms are injected by driver."""
     def __init__(self, *, ledger, pose_history, keyframe_type, camera_type, colorize,
                  T_base_imu, camera_prefix, allocator=np.empty, max_rgb_dt_s=.06,
-                 keyframe_hz=2., occlusion_cell=2, occlusion_tolerance_m=.05,
+                 keyframe_hz=2., rate_policy=None, occlusion_cell=2, occlusion_tolerance_m=.05,
                  fusion=None, max_wait_s=5., scan_capacity=128, image_capacity=300, rectify_rgb=False):
-        if max_rgb_dt_s <= 0 or keyframe_hz <= 0 or max_wait_s <= 0 or min(scan_capacity, image_capacity) < 2:
+        if (max_rgb_dt_s <= 0 or not math.isfinite(keyframe_hz) or keyframe_hz <= 0
+                or max_wait_s <= 0 or min(scan_capacity, image_capacity) < 2):
             raise ValueError('mapping synchronization bounds must be positive')
         self.ledger, self.history = ledger, pose_history
         self.keyframe_type, self.camera_type, self.colorize = keyframe_type, camera_type, colorize
@@ -32,9 +34,13 @@ class LaserMappingIO:
         self.fusion, self.max_wait_s = fusion, max_wait_s
         self.rectify_rgb = rectify_rgb
         self.rectification = None
-        self.max_dt_ns, self.interval_ns = int(max_rgb_dt_s * 1e9), int(1e9/keyframe_hz)
+        self.max_dt_ns = int(max_rgb_dt_s * 1e9)
+        self.keyframe_hz = self.target_keyframe_hz = float(keyframe_hz)
+        self.rate_policy = rate_policy
         self.visibility = dict(occlusion_cell=occlusion_cell, occlusion_tolerance_m=occlusion_tolerance_m)
-        self.scans, self.images, self.graphs = deque(maxlen=scan_capacity), deque(maxlen=image_capacity), deque(maxlen=32)
+        # Each reply is a complete graph. While building a map, only the newest
+        # reply is needed; pending source observations remain in self.pending.
+        self.scans, self.images, self.graphs = deque(maxlen=scan_capacity), deque(maxlen=image_capacity), deque(maxlen=1)
         self.pending = {}
         self.info = self.optical = None
         self.last_submitted = self.last_scan_received = None
@@ -47,7 +53,8 @@ class LaserMappingIO:
         self.graph_requested = 0
         self.graph_wait_since = self.graph_received_at = None
         self.stats = dict(scans_received=0, rgb_received=0, submitted=0, keyframes=0,
-                          unmatched_rgb=0, missing_pose=0, dropped_scans=0, loop_links=0,
+                          unmatched_rgb=0, missing_pose=0, dropped_scans=0, expired_scans=0,
+                          rate_limited_scans=0, loop_links=0,
                           graph_requests=0, graph_responses=0,
                           max_rgb_dt_s=0., max_graph_latency_s=0.)
 
@@ -77,7 +84,14 @@ class LaserMappingIO:
             'scan': node.create_publisher(PointCloud2, prefix+'/keyframe/scan', 4),
             'odom': node.create_publisher(Odometry, prefix+'/keyframe/odom', 4),
         }
-        owner.task('laser-rgb-map', self.process, hz=30)
+        self.start_tasks()
+
+    def start_tasks(self):
+        # A full voxel rebuild/archive may take seconds. It must not hold up
+        # current RGB/laser pairing or polling an already completed graph RPC.
+        self.owner.task('laser-rgb-input', self.submit_scan, hz=30)
+        self.owner.task('mapping-graph-poll', self.poll, hz=30)
+        self.owner.task('laser-rgb-map', self.process, hz=30)
 
     def scan(self, message):
         if len(self.scans) == self.scans.maxlen:
@@ -137,6 +151,8 @@ class LaserMappingIO:
                 'cloud_pose_age_s': (time.time_ns()-self.last_scan_stamp)*1e-9 if self.last_scan_stamp is not None else None,
                 'mapping_lag_s': (time.time_ns()-self.last_submitted)*1e-9 if self.last_submitted is not None else None,
                 'pending_scans': len(self.scans),
+                'target_keyframe_hz': self.target_keyframe_hz, 'keyframe_max_hz': self.keyframe_hz,
+                'keyframe_motion': self.rate_policy.diagnostics() if self.rate_policy is not None else None,
                 'pending_keyframes': len(self.pending), 'active_keyframes': len(self.ledger.active),
                 'graph_response_age_s': None if self.graph_received_at is None else time.monotonic()-self.graph_received_at}
 
@@ -165,7 +181,6 @@ class LaserMappingIO:
             raise
 
     async def process(self):
-        self.poll_graph()
         correction = None
         while self.graphs:
             message = self.graphs.popleft()
@@ -203,45 +218,66 @@ class LaserMappingIO:
             self.owner.correction = self.pending_correction
             self.owner.correction_revision = dict(session_id=self.ledger.session_id, revision=self.ledger.revision)
             self.pending_correction = None
-        await self.submit_scan()
+
+    async def poll(self):
+        self.poll_graph()
         if self.last_scan_received is not None and time.monotonic() - self.last_scan_received > 5:
             raise RuntimeError('Super-LIO deskewed clouds stopped updating')
 
     async def submit_scan(self):
+        # Old scans cannot produce a useful live keyframe once the waiting
+        # budget has elapsed. Do not feed a growing delay back into RTAB/TF.
+        now = time.monotonic()
+        while self.scans and now - self.scans[0][1] > self.max_wait_s:
+            self.scans.popleft()
+            self.stats['expired_scans'] += 1
         if not self.scans or not self.images or self.info is None or self.body_optical() is None:
             return
-        # Drain scans excluded by the selected keyframe rate together. Map
-        # rebuilding must not turn intentional subsampling into a stale queue.
-        while self.scans and self.last_submitted is not None and stamp_ns(self.scans[0][0].cloud) < self.last_submitted + self.interval_ns:
-            self.scans.popleft()
-        if not self.scans:
-            return
-        scan, arrival = self.scans[0]
-        expired = time.monotonic()-arrival > self.max_wait_s
-        scan_stamp = stamp_ns(scan.cloud)
-        # Wait for one RGB sample beyond the scan time, so nearest is bilateral.
-        if stamp_ns(self.images[-1]) < scan_stamp and not expired:
-            return
-        image = min(self.images, key=lambda value: abs(stamp_ns(value)-scan_stamp))
-        info = self.info
-        optical = self.optical
-        if info.header.frame_id != image.header.frame_id:
-            raise ValueError('RGB image and calibration have different optical frames')
-        image_stamp = stamp_ns(image)
-        if abs(image_stamp-scan_stamp) > self.max_dt_ns:
-            self.scans.popleft()
-            self.stats['unmatched_rgb'] += 1
-            return
-        image_pose = self.history.at(image_stamp)
-        odom_pose = self.fusion.history.at(image_stamp) if self.fusion is not None else image_pose
-        odom_cov = self.fusion.covariance_history.at(image_stamp) if self.fusion is not None else None
-        if image_pose is None or odom_pose is None or (self.fusion is not None and odom_cov is None):
-            if expired:
+        # Drain excluded scans in one bounded pass. Decide in acquisition time,
+        # before projection, serialization and RTAB's database writes. Recompute
+        # the interval for each candidate so acceleration need not wait for an
+        # old low-rate deadline. The final RGB stamps enforce the upper bound.
+        while self.scans:
+            scan, arrival = self.scans[0]
+            expired = time.monotonic()-arrival > self.max_wait_s
+            scan_stamp = stamp_ns(scan.cloud)
+            # Wait for one RGB sample beyond the scan time, so nearest is bilateral.
+            if stamp_ns(self.images[-1]) < scan_stamp and not expired:
+                return
+            image = min(self.images, key=lambda value: abs(stamp_ns(value)-scan_stamp))
+            info, optical = self.info, self.optical
+            if info.header.frame_id != image.header.frame_id:
+                raise ValueError('RGB image and calibration have different optical frames')
+            image_stamp = stamp_ns(image)
+            if abs(image_stamp-scan_stamp) > self.max_dt_ns:
                 self.scans.popleft()
-                self.stats['missing_pose'] += 1
-            return
-        self.scans.popleft()
-        if self.last_submitted is not None and image_stamp <= self.last_submitted:
+                self.stats['unmatched_rgb'] += 1
+                continue
+            if self.last_submitted is not None and image_stamp <= self.last_submitted:
+                self.scans.popleft()
+                self.stats['rate_limited_scans'] += 1
+                continue
+            hz = self.rate_policy.frequency(image_stamp) if self.rate_policy is not None else self.keyframe_hz
+            self.target_keyframe_hz = min(self.keyframe_hz, hz)
+            # Quantize the adaptive period to source-clock resolution. Tiny
+            # pose roundoff at a speed threshold must not skip a whole scan;
+            # the configured maximum still has a strict ceiling on frequency.
+            interval_ns = max(math.ceil(1e9 / self.keyframe_hz), round(1e9 / self.target_keyframe_hz))
+            if self.last_submitted is not None and image_stamp - self.last_submitted < interval_ns:
+                self.scans.popleft()
+                self.stats['rate_limited_scans'] += 1
+                continue
+            image_pose = self.history.at(image_stamp)
+            odom_pose = self.fusion.history.at(image_stamp) if self.fusion is not None else image_pose
+            odom_cov = self.fusion.covariance_history.at(image_stamp) if self.fusion is not None else None
+            if image_pose is None or odom_pose is None or (self.fusion is not None and odom_cov is None):
+                if expired:
+                    self.scans.popleft()
+                    self.stats['missing_pose'] += 1
+                return
+            self.scans.popleft()
+            break
+        else:
             return
         points = pointcloud_array(scan.cloud).points.reshape(-1)
         xyz = np.column_stack([points[key] for key in 'xyz'])

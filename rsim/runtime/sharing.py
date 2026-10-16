@@ -204,9 +204,11 @@ class SharedProvider(SharedComponent):
 
     The supervised worker owns the graph; launcher and clients own independent
     socket leases. A launcher may exit while connected clients continue using it.
+    An explicit log_path preserves worker diagnostics after lease cleanup.
     """
     def __init__(self, component=None, *, factory=None, ports=None, key,
-                 interface_version='ports-v1', provider_version='1', transport=None, placement=None):
+                 interface_version='ports-v1', provider_version='1', transport=None, placement=None,
+                 log_path=None):
         if (component is None) == (factory is None):
             raise ValueError('supply a component or a local provider factory')
         if component is not None:
@@ -219,6 +221,7 @@ class SharedProvider(SharedComponent):
         # Explicit launchers must not be merged with connection-only views.
         self.key = None
         self.directory = None
+        self.log_path = Path(log_path).expanduser().resolve() if log_path is not None else None
 
     async def open(self):
         path, lock_path = registry_paths(self.component_key, self.transport.domain_id)
@@ -266,7 +269,9 @@ class SharedProvider(SharedComponent):
                             ports={name: spec.manifest() for name, spec in self.port_specs.items()})
             (directory / 'config.json').write_text(json.dumps(dict(manifest=manifest,
                 transport=asdict(self.transport), sys_path=[str(Path(p).resolve()) for p in sys.path])))
-            with (directory / 'worker.log').open('w') as log:
+            log_path = self.log_path or directory / 'worker.log'
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open('a') as log:
                 process = subprocess.Popen([sys.executable, '-m', 'rsim.runtime.provider_supervisor',
                     str(directory), str(listener.fileno()), str(initial_server.fileno()),
                     str(lock.fileno()), str(path)], pass_fds=(listener.fileno(), initial_server.fileno(), lock.fileno()),

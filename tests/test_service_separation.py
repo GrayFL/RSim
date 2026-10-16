@@ -80,6 +80,35 @@ def test_mapping_application_rejects_hardware_recipes(tmp_path):
         assert not (tmp_path/'out').exists()
 
 
+def test_mapping_service_preserves_last_diagnostics_on_failure(tmp_path, monkeypatch):
+    import json
+    from rsim.apps import mapping_service
+    from rsim.core import Component
+
+    class FailedMapping(Component):
+        def __init__(self):
+            super().__init__()
+            for name in ('pose', 'status', 'map', 'rgb_map'):
+                setattr(self, name, self.signal(name, clock='test'))
+
+        async def open(self):
+            assert set(self._runtime.demanded_ports) == {self.pose, self.status}
+            await self.status.publish({'input_age_s': {'imu': .01}}, stamp_ns=1, clock='test')
+            await self.pose.publish(1, stamp_ns=1, clock='test')
+            self.task('failed-graph', self.fail, hz=20)
+
+        async def fail(self):
+            raise RuntimeError('graph response timed out')
+
+    config = tmp_path/'config.yaml'
+    config.write_text('mapping: {}\n')
+    monkeypatch.setattr(mapping_service, 'load_mapper', lambda *a, **kw: FailedMapping())
+    with pytest.raises(ComponentError):
+        asyncio.run(mapping_service.run(SimpleNamespace(config=config, output=tmp_path/'sessions')))
+    report, = (tmp_path/'sessions').glob('*/failure.json')
+    assert json.loads(report.read_text())['last_status']['input_age_s']['imu'] == .01
+
+
 def test_default_mapping_graph_has_no_hardware_owner(tmp_path):
     from rsim.config import load_mapper
     settings=yaml.safe_load((ROOT/'examples/mapping/mapping_topics.example.yaml').read_text())
@@ -87,14 +116,25 @@ def test_default_mapping_graph_has_no_hardware_owner(tmp_path):
     path=tmp_path/'mapping.yaml';path.write_text(yaml.safe_dump(settings))
     graph=load_mapper(path).factory()
     from rsim.adapters.ros2.driver import Driver
-    pending=[graph];seen=set();packages=[]
+    pending=[graph];seen=set();packages=[];lio=None
     while pending:
         node=pending.pop()
         if id(node) in seen:continue
         seen.add(id(node))
-        if isinstance(node,Driver):packages.append(node.package)
+        assert not node.command_targets
+        assert not node.sinks
+        if isinstance(node,Driver):
+            packages.append(node.package)
+            if node.package == 'super_lio':lio=node
         pending.extend(node.dependencies)
         pending.extend(signal.producer for signal in node.inputs)
     assert sorted(packages)==['rtabmap_slam','super_lio']
     assert graph.ingress.topics['points']=='/iv_points'
     assert graph.mapping.camera_prefix=='/rsim/d435'
+    assert graph.mapping.rate_policy.history is graph.mapping.history
+    assert graph.mapping.rate_policy.min_hz == .1
+    assert graph.mapping.rate_policy.max_hz == graph.mapping.keyframe_hz == 1.
+    assert graph.ingress.topics['imu']=='/rsim/chassis/imu/data'
+    assert graph.ingress.topics['odom']=='/rsim/chassis/odom'
+    assert graph.ingress.remote['imu'].pending.maxlen == 512
+    assert lio.parameters['lio.ros.imu_topic'] == '/rsim/chassis/imu/data'

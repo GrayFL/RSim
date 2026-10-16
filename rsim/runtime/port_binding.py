@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 import json
 from pathlib import Path
+import traceback
 import uuid
 
 from rsim.core.component import Component, PrimaryComponent
@@ -220,7 +221,11 @@ class PortBinding:
                     await port.producer._release_port(port, record['upstream'])
 
     def errors(self):
-        return {port: str(record["endpoint"]._failure) for port, record in self.records.items()
+        # The outer Signal error is often only "component task failed". Keep
+        # a bounded cause/stack excerpt across the registry boundary. Providers
+        # can keep the complete worker traceback in their persistent log.
+        return {port: ''.join(traceback.format_exception(record["endpoint"]._failure))[-4000:]
+                for port, record in self.records.items()
                 if record["endpoint"]._failure is not None}
 
     async def close(self):
