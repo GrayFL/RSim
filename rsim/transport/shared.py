@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import deque
 from contextvars import ContextVar
 from pathlib import Path
+from .files import open_array, unlink, remove_tree
 import os
 import math
 import shutil
@@ -47,7 +48,7 @@ def allocate(shape, dtype=np.float64):
 
 
 def _unlink(path):
-    Path(path).unlink(missing_ok=True)
+    unlink(path)
 
 
 class SharedStore:
@@ -106,11 +107,11 @@ class SharedStore:
             descriptor = self._encode(frame.data, directory)
             metadata = self._encode(frame.metadata, directory)
         except BaseException:
-            shutil.rmtree(directory)
+            remove_tree(directory)
             raise
         self._committed.append(directory)
         while len(self._committed) > self.history:
-            shutil.rmtree(self._committed.popleft())
+            remove_tree(self._committed.popleft())
         return {"data": descriptor, "stamp_ns": frame.stamp_ns, "clock": frame.clock,
                 "received_ns": frame.received_ns, "sequence": frame.sequence,
                 "sample_id": asdict(frame.sample_id) if frame.sample_id else None, "metadata": metadata}
@@ -121,7 +122,7 @@ class SharedStore:
         directory = self.directory / "allocated"
         directory.mkdir(exist_ok=True)
         path = directory / (uuid.uuid4().hex + ".npy")
-        array = np.lib.format.open_memmap(path, mode="w+", dtype=dtype, shape=shape)
+        array = open_array(path, dtype=dtype, shape=shape)
         array._rsim_owned = True
         weakref.finalize(array, _unlink, str(path))
         return array
@@ -138,7 +139,7 @@ class SharedStore:
             path = directory / (uuid.uuid4().hex + ".npy")
             linked = False
             if isinstance(data, np.memmap) and data.filename and Path(data.filename).exists():
-                original = np.load(data.filename, mmap_mode="r", allow_pickle=False)
+                original = open_array(data.filename)
                 if getattr(data, "_rsim_owned", False):
                     data.flags.writeable = False
                 # Views can retain memmap.offset even when their first element
@@ -177,7 +178,7 @@ class SharedStore:
 
     def close(self):
         self._prepared.clear()
-        shutil.rmtree(self.directory, ignore_errors=True)
+        remove_tree(self.directory, ignore_errors=True)
 
 
 def decode(data, allowed_directory):
@@ -191,7 +192,7 @@ def decode(data, allowed_directory):
         path = Path(data["path"]).resolve()
         if not path.is_relative_to(Path(allowed_directory).resolve()):
             raise ValueError("descriptor path is outside this sensor's store")
-        return np.load(path, mmap_mode="r", allow_pickle=False)
+        return open_array(path)
     if kind == "points":
         return PointCloud(decode(data["points"], allowed_directory), data["frame_id"])
     if kind == "image":

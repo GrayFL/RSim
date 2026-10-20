@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import json
 import os
@@ -18,12 +17,13 @@ import cloudpickle
 
 from rsim.core.errors import ComponentError
 from .process import ProcessSensor
+from .platform import user_id
 
 
 def registry_directory():
-    directory = Path(tempfile.gettempdir()) / f"rsim-host-{os.getuid()}"
+    directory = Path(tempfile.gettempdir()) / f"rsim-host-{user_id()}"
     directory.mkdir(mode=0o700, exist_ok=True)
-    if directory.is_symlink() or directory.stat().st_uid != os.getuid():
+    if directory.is_symlink() or (os.name != 'nt' and directory.stat().st_uid != os.getuid()):
         raise ComponentError("source registry is not owned by the current user")
     os.chmod(directory, 0o700)
     return directory
@@ -50,6 +50,11 @@ class SharedSensor(ProcessSensor):
         self._reader = self._writer = None
 
     async def open(self):
+        if os.name == 'nt':
+            from .windows_sharing import open_sensor
+            await open_sensor(self)
+            return
+        import fcntl
         identity = f"{self.transport.domain_id}:{self.source_key}"
         digest = hashlib.sha256(identity.encode()).hexdigest()[:32]
         registry = registry_directory()

@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from .platform import install_shutdown
 import signal
 import sys
 import traceback
@@ -27,9 +28,7 @@ async def run(directory):
     transport = DescriptorTransport(TransportConfig(**config["transport"]))
     roots, allocator = worker_graph(payload, config["group"], directory, transport)
     stopped = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stopped.set)
+    install_shutdown(stopped, directory)
     try:
         async with Runtime(*roots, _root_ports=False) as runtime:
             # Dynamic shared clients bind here, at the computation location.

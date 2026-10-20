@@ -58,6 +58,8 @@ Notebook 没有 `__file__`，从当前工作目录向上找到同时包含 `pypr
 
 ## 验证与记录
 
+MuJoCo 适配器的局部测试与无硬件 demo 见 [MuJoCo 后端](mujoco.md)。Windows 已支持 ProcessSensor、ProcessPlacement、SharedSensor 和 SharedProvider/SharedComponent；实现及验证入口见 [Windows 部署](windows.md)。物理/离屏 GL 必须在同一工作线程创建、使用和关闭，图形初始化不得阻塞控制心跳。
+
 在具备项目依赖的环境中，从项目根目录运行：
 
 ```bash

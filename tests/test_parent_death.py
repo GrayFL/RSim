@@ -7,27 +7,7 @@ import sys
 import time
 
 
-def descendants(parent):
-    parents = {}
-    for path in Path("/proc").glob("[0-9]*/stat"):
-        try:
-            stat = path.read_text().rsplit(")", 1)[1].split()
-            parents[int(path.parent.name)] = int(stat[1])
-        except (FileNotFoundError, ProcessLookupError):
-            pass
-    found = {parent}
-    while True:
-        added = {pid for pid, ppid in parents.items() if ppid in found} - found
-        if not added:
-            return found - {parent}
-        found |= added
-
-
-def alive(pid):
-    try:
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
-        return False
+from process_support import descendants, alive, kill, command
 
 
 def test_parent_sigkill_reaps_nested_workers_and_stores(tmp_path):
@@ -58,12 +38,9 @@ asyncio.run(main())
             assert len(children) >= 4  # two supervisors + two asyncio workers
             stores = []
             for pid in children:
-                try:
-                    args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-                except FileNotFoundError:
-                    continue
-                if b"rsim.runtime.supervisor" in args:
-                    stores.append(Path(os.fsdecode(args[args.index(b"rsim.runtime.supervisor") + 1])))
+                args = command(pid)
+                if "rsim.runtime.supervisor" in args:
+                    stores.append(Path(args[args.index("rsim.runtime.supervisor") + 1]))
             assert len(stores) == 2
             process.kill()
             await process.wait()
@@ -76,7 +53,7 @@ asyncio.run(main())
                 await process.wait()
             for pid in children:
                 if alive(pid):
-                    os.kill(pid, signal.SIGKILL)
+                    kill(pid)
     asyncio.run(run())
 
 
@@ -120,5 +97,5 @@ asyncio.run(main())
                 await process.wait()
             for pid in children:
                 if alive(pid):
-                    os.kill(pid, signal.SIGKILL)
+                    kill(pid)
     asyncio.run(run())

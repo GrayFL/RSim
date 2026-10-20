@@ -1,6 +1,6 @@
 # 多端口共享与精确订阅
 
-同机 Linux 的多个 Python 环境可以共享同一组件。生产者环境显式启动 `SharedProvider`，客户端用 `SharedComponent` 声明已知端口；两侧通过命名 Signal / CommandSink 通信。客户端不接收工厂或驱动代码。实现限于同一用户、同一主机及共享注册表和文件存储命名空间，不能将 mmap 描述信息直接用于跨机器图像或点云传输。
+同机 Linux 或 Windows 的多个 Python 环境可以共享同一组件。生产者环境显式启动 `SharedProvider`，客户端用 `SharedComponent` 声明已知端口；两侧通过命名 Signal / CommandSink 通信。客户端不接收工厂或驱动代码。实现限于同一用户、同一主机及共享注册表和文件存储命名空间，不能将 mmap 描述信息直接用于跨机器图像或点云传输。
 
 ## 精确需求
 
@@ -57,9 +57,9 @@ async with Runtime(mapper.pose):
 
 ## 协议与数据路径
 
-注册表使用同用户 Unix socket 和生命周期文件锁，协议版本为 2，只处理 `describe / subscribe / unsubscribe`。请求带 ID，同一连接中的订阅重试不会重复增加引用。连接断开释放该会话所有订阅；重连必须显式重新打开 Runtime，不沿用已结束实例的样本或控制权。
+注册表在 Linux 使用同用户 Unix socket，在 Windows 使用带令牌认证的 loopback TCP；两者结合文件锁管理生命周期，协议版本为 2，只处理 `describe / subscribe / unsubscribe`。请求带 ID，同一连接中的订阅重试不会重复增加引用。连接断开释放该会话所有订阅；重连必须显式重新打开 Runtime，不沿用已结束实例的样本或控制权。
 
-Manifest 包含 key、instance、接口/配置版本、host boot ID、DDS domain，以及各端口的方向、schema、clock、history_capacity、max_ttl。声明地图元数据不会创建地图 exporter 或共享数组。
+Manifest 包含 key、instance、接口/配置版本、host boot ID（Linux boot UUID / Windows boot GUID）、DDS domain，以及各端口的方向、schema、clock、history_capacity、max_ttl。声明地图元数据不会创建地图 exporter 或共享数组。
 
 订阅返回 `subscription_id`、`binding_id`、`channel_generation`、topic、storage_descriptor 与 effective_history。一个端口的多个客户端复用 exporter；最后一次退订释放该端点，再次订阅获得新通道代次。生产者历史、DDS 缓存与客户端历史独立：新订阅只保证获得仍保留的 latest，或等待下一帧，不回放生产者完整历史。客户端 history_capacity 只限制自己的缓冲。
 
@@ -73,7 +73,7 @@ Manifest 包含 key、instance、接口/配置版本、host boot ID、DDS domain
 
 `Frame.sample_id` 是可选的 `SampleId(producer_instance_id, canonical_port_id, publication_sequence)`，新传输自动携带。别名、导入和纯转发保留身份；实际计算产生新身份。重新打开 producer 会创建新实例，旧接口手工构造的 Frame 仍兼容。`Frame.sequence` 保留为当前读端的本地游标，不能跨读端比较。退订再订阅同一保留样本时，通道代次改变，SampleId 不变。
 
-`stamp_ns / clock / received_ns` 原样通过端口传输。跨时钟仍需显式 ClockTransform；同机 monotonic deadline 只能在相同 host boot ID 的范围内比较。SampleId 不是地图观测来源编号，也不替代采样时间。
+`stamp_ns / clock / received_ns` 原样通过端口传输。跨时钟仍需显式 ClockTransform；同机 monotonic deadline 只能在相同 host boot ID（Linux boot UUID / Windows boot GUID） 的范围内比较。SampleId 不是地图观测来源编号，也不替代采样时间。
 
 共享 sink 仍由最终 provider 的 CommandGuard 校验独占会话、epoch、sequence、deadline 和最大 TTL。通道额外绑定 provider instance 与当前订阅 token；断连撤销 token，并对该会话拥有的命令执行 fallback。发现、重试和转发均不延长 deadline。Component 根不会自动取得命令绑定。实际控制器仍须与阻塞计算隔离；通用异步 deadman 不具备抢占同进程阻塞代码的能力。
 

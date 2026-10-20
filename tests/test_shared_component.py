@@ -1,4 +1,5 @@
 import asyncio
+from process_support import alive, kill, suspend
 import os
 from pathlib import Path
 import uuid
@@ -208,14 +209,13 @@ def test_independent_guard_cleans_blocked_provider_after_launcher_dies():
         launcher = Runtime(provider, _root_ports=False)
         await launcher.__aenter__()
         pid, directory = provider.manifest['pid'], provider.directory
-        os.kill(pid, signal.SIGSTOP)
+        suspend(pid)
         # Model a client crash: drop the socket without cooperative provider work.
         await launcher.aclose()
         async with asyncio.timeout(12):
             while directory.exists():
                 await asyncio.sleep(.05)
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+        assert not alive(pid)
     asyncio.run(run())
 
 
@@ -227,6 +227,8 @@ def test_v2_cross_environment_client_and_placement_do_not_import_ros(tmp_path, b
     executable = os.environ.get('RSIM_TEST_CLIENT_PYTHON')
     if not executable:
         pytest.skip('set RSIM_TEST_CLIENT_PYTHON to select the independent client interpreter')
+    if backend == 'ros2':
+        pytest.importorskip('rclpy', exc_type=ImportError)
     code = '''
 import asyncio, json, os, sys
 from pathlib import Path
@@ -320,7 +322,7 @@ def test_provider_restart_changes_identity_and_never_silently_rebinds_old_client
         async with Runtime(provider, _root_ports=False), Runtime(client.map):
             frame = await client.map.get(timeout=5)
             old_instance = client.manifest['instance_id']
-            os.kill(provider.manifest['pid'], signal.SIGKILL)
+            kill(provider.manifest['pid'])
             async with asyncio.timeout(5):
                 while client._failure is None or provider.directory.exists():
                     await asyncio.sleep(.05)

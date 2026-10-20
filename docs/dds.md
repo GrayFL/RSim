@@ -109,9 +109,9 @@ topic 前缀遵循 [ROS 2 到 DDS 的命名映射](https://design.ros2.org/artic
 
 ## 共享内存与所有权
 
-DDS 只传描述信息，完整数组通过 Linux tmpfs 的只读 mmap 共享。图像/点云首次进入共享存储可能复制；已有完整共享数组跨层转发复用 inode，新计算输出可使用 `allocate()`。这不是 ROS 驱动全链路零拷贝，也不是原生 DDS loan。
+DDS 只传描述信息，完整数组通过只读 mmap 共享：Linux 使用 tmpfs，Windows 使用当前用户临时目录中的 NTFS 文件及共享文件映射。Windows 文件可落盘，不等同于 RAM-only tmpfs。图像/点云首次进入共享存储可能复制；已有完整共享数组跨层转发复用 inode，新计算输出可使用 `allocate()`。这不是 ROS 驱动全链路零拷贝，也不是原生 DDS loan。
 
-同机源发现和生命周期仍依赖同 Unix 用户的文件锁、Unix socket lease、独立监督进程与 WatchDog。跨 domain 的物理设备锁仍阻止重复启动同一驱动。保留这些机制，是为了处理历史淘汰、进程崩溃、多个消费者共享以及递归子进程退出；DDS 发现本身不能替代它们。
+同机源发现和生命周期依赖同一用户的文件锁、租约、独立监督进程与 WatchDog。Linux 使用 Unix socket；Windows 使用用户临时目录中的端点记录、随机令牌认证的 loopback TCP 租约及 Job Object，详见 [Windows 部署](windows.md)。跨 domain 的物理设备锁仍阻止重复启动同一驱动。保留这些机制，是为了处理历史淘汰、进程崩溃、多个消费者共享以及递归子进程退出；DDS 发现本身不能替代它们。
 
 历史淘汰可以删除文件路径，但已经打开的映射继续有效。较慢读者可能跳过已淘汰的描述信息，`get()` 是最新帧接口，不保证无损录像。本机注册表与 mmap 路径不构成跨机器传输方案。
 

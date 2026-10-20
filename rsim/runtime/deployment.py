@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
+from .platform import user_id, spawn_leased
+from rsim.transport.files import storage_root, remove_tree, open_shared
 import shutil
 import sys
 import tempfile
@@ -73,14 +75,9 @@ class _ProcessHost(Component):
         self.process = self._lease = self._log = self.worker_pid = None
 
     async def open(self):
-        read, self._lease = os.pipe()
-        self._log = (self.directory / "worker.log").open("w")
-        try:
-            self.process = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "rsim.runtime.supervisor", str(self.directory), str(read),
-                pass_fds=(read,), start_new_session=True, stdout=self._log, stderr=self._log)
-        finally:
-            os.close(read)
+        self._log = open_shared(self.directory / 'worker.log', write=True, create=True)
+        self.process, self._lease = await spawn_leased('rsim.runtime.supervisor', self.directory,
+                                                       stdout=self._log, stderr=self._log)
         self.task("supervise", self.check, hz=50)
 
     async def check(self):
@@ -109,7 +106,7 @@ class _ProcessHost(Component):
         finally:
             if self._log is not None:
                 self._log.close()
-            shutil.rmtree(self.directory, ignore_errors=True)
+            remove_tree(self.directory, ignore_errors=True)
 
 
 class _DirectoryLease(Component):
@@ -119,13 +116,7 @@ class _DirectoryLease(Component):
         self.process = self.lease = None
 
     async def open(self):
-        read, self.lease = os.pipe()
-        try:
-            self.process = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "rsim.runtime.store_guard", str(self.directory), str(read),
-                pass_fds=(read,), start_new_session=True)
-        finally:
-            os.close(read)
+        self.process, self.lease = await spawn_leased('rsim.runtime.store_guard', self.directory)
         self.task("store-guard", self.check, hz=20)
 
     async def check(self):
@@ -203,7 +194,7 @@ class BindingPlan:
         if not specs:
             return
         # Command bindings are installed separately from sample channels.
-        self.directory = Path(tempfile.mkdtemp(prefix=f"rsim-deploy-{os.getuid()}-", dir="/dev/shm"))
+        self.directory = Path(tempfile.mkdtemp(prefix=f"rsim-deploy-{user_id()}-", dir=storage_root()))
         directories = {name: self.directory / ("p" + str(i)) for i, name in enumerate(specs)}
         local_directory = self.directory / "local"
         for directory in (*directories.values(), local_directory):
@@ -329,7 +320,7 @@ class BindingPlan:
         if self.allocator is not None:
             self.allocator.close()
         if self.directory is not None:
-            shutil.rmtree(self.directory, ignore_errors=True)
+            remove_tree(self.directory, ignore_errors=True)
 
 
 def worker_graph(payload, group, directory, transport):

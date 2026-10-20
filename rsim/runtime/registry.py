@@ -9,6 +9,8 @@ import uuid
 
 from rsim.core.errors import ComponentError, ProviderDisconnected, PortNotBound
 from .host import registry_directory
+from .platform import boot_id, user_id
+from . import local_socket
 
 PROTOCOL = 2
 LIMIT = 65536
@@ -16,11 +18,11 @@ LIMIT = 65536
 
 def host_id():
     # The boot identity also scopes CLOCK_MONOTONIC and stale registry entries.
-    return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    return boot_id()
 
 
 def registry_paths(key, domain_id):
-    digest = hashlib.sha256(f'{host_id()}:{os.getuid()}:{domain_id}:{key}'.encode()).hexdigest()[:32]
+    digest = hashlib.sha256(f'{host_id()}:{user_id()}:{domain_id}:{key}'.encode()).hexdigest()[:32]
     base = registry_directory() / ('v2-' + digest)
     return base.with_suffix('.sock'), base.with_suffix('.lock')
 
@@ -33,7 +35,7 @@ class Connection:
     @classmethod
     async def connect(cls, path):
         try:
-            return cls(*await asyncio.open_unix_connection(str(path), limit=LIMIT))
+            return cls(*await local_socket.open_connection(path, limit=LIMIT))
         except (FileNotFoundError, ConnectionRefusedError) as error:
             raise ProviderDisconnected('provider is not running; start it in its own environment') from error
 
@@ -78,7 +80,7 @@ class RegistryServer:
         self.server = None
 
     async def start(self, *, path=None, sock=None):
-        self.server = await asyncio.start_unix_server(self.accept, path=path, sock=sock, limit=LIMIT)
+        self.server = await local_socket.start_server(self.accept, path=path, sock=sock, limit=LIMIT)
         return self
 
     def describe(self):

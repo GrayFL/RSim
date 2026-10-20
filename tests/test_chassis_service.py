@@ -209,7 +209,7 @@ asyncio.run(main())
             )
             try:
                 async with asyncio.timeout(10):
-                    assert await child.stdout.readline() == b"ready\n"
+                    assert (await child.stdout.readline()).rstrip(b'\r\n') == b"ready"
                     while source.command.linear_x == 0:
                         await asyncio.sleep(0.01)
                 child.kill()

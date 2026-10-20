@@ -30,7 +30,7 @@ def test_package_dependency_boundaries():
         assert not path.stem.startswith("_") or path.stem in {"__init__", "__main__"}
         layer = parts[1]
         package = ".".join(parts[:-1])
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Import):
                 imports = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom):
@@ -55,7 +55,7 @@ class NoOptionalDependencies(MetaPathFinder):
         if fullname.split('.')[0] in {
             'rclpy', 'rospy', 'std_msgs', 'sensor_msgs', 'geometry_msgs',
             'nav_msgs', 'ament_index_python', 'cyclonedds', 'serial',
-            'cv2', 'graphmap', 'yaml',
+            'cv2', 'graphmap', 'yaml', 'mujoco', 'trimesh', 'scipy', 'PIL', 'matplotlib',
         }:
             raise AssertionError('eager optional dependency: ' + fullname)
 sys.meta_path.insert(0, NoOptionalDependencies())

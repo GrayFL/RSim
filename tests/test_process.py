@@ -9,6 +9,7 @@ from rsim import Runtime, SensorError
 from rsim.core.compose import Map
 from rsim.runtime.process import ProcessSensor
 from rsim.components.synthetic import CounterArray
+from process_support import kill
 
 
 def nested_factory():
@@ -41,7 +42,7 @@ def test_worker_crash_propagates_and_cleans():
         sensor = ProcessSensor(lambda: CounterArray())
         async with Runtime(sensor):
             await sensor.get(timeout=20)
-            os.kill(sensor.worker_pid, signal.SIGKILL)
+            kill(sensor.worker_pid)
             async with asyncio.timeout(3):
                 while sensor._failure is None:
                     await asyncio.sleep(0.02)

@@ -26,7 +26,7 @@ Python 版本要求见 [pyproject.toml](pyproject.toml)。本地应用安装：
 python -m pip install -e '.[dds]'
 ```
 
-跨进程实现需要 Linux 和可用的 Cyclone DDS；同进程组合不加载 DDS。只有 ROS 适配器需要匹配 ROS 的解释器及设备驱动，UVC 另需 OpenCV。不同 Python 环境之间通过共享 provider 连接，见 [DDS 文档](docs/dds.md)。测试额外需要 pytest；Notebook 需要 Jupyter 和绘图依赖。
+跨进程支持 Linux，以及 Windows 10/11 的本地 NTFS 文件系统，需可用的 Cyclone DDS；同进程组合不加载 DDS。Windows 的存储、租约与进程监督约定见 [Windows 跨进程部署](docs/windows.md)。只有 ROS 适配器需要匹配 ROS 的解释器及设备驱动，UVC 另需 OpenCV。不同 Python 环境之间通过共享 provider 连接，见 [DDS 文档](docs/dds.md)。测试额外需要 pytest；Notebook 需要 Jupyter 和绘图依赖。
 
 ## 定义组件与多输出
 
@@ -96,6 +96,8 @@ BlueSea 2D 雷达可通过 `rsim.drivers.BlueSea` 启动外部 ROS2 驱动，同
 
 ## 控制与仲裁
 
+MuJoCo 也可作为底层源：安装 `.[mujoco]` 后运行 `python -m rsim.apps.mujoco --scene "data/scene.glb" --headless --mode demo --seconds 12`。`rsim.drivers.MuJoCo` 提供差速动力学、雷达、RGBD、轮式里程计和真值；`rsim.devices.Chassis` 的应用代码可复用到仿真或真机服务。单进程示例使用显式 `inprocess`，也可用 `rsim.apps.mujoco_service` 启动物理 worker 和 DDS 控制服务，再从另一解释器执行设备应用；详见 [MuJoCo 接入](docs/mujoco.md) 和 [Windows 跨进程部署](docs/windows.md)。
+
 ```python
 from rsim import Connect, CommandMux, CommandInput, VelocityCommand
 
@@ -119,7 +121,7 @@ async with Runtime(drive):
 
 `SharedSensor(factory, key=..., version=...)` 保留单输出兼容适配器和租约；省略 factory 时仅连接。相同 key 的创建者须匹配配置，其他客户端离开不会停止仍有租约的硬件。旧 `ProcessSensor(factory)` 保留为单输出兼容入口，工厂内仍可嵌套进程。
 
-同机通道使用 DDS 描述信息 + tmpfs 只读 mmap，普通数组首次跨边界需要一次 materialization，后续消费者共享 inode。完整的只读 memmap 转发可复用 inode；它不是 ROS 驱动全链路零拷贝，也不是中间件原生 loan。发布后不得修改 payload；已读取的映射在历史淘汰或 Runtime 退出后仍可读。
+同机通道使用 DDS 描述信息 + 只读 mmap（Linux tmpfs / Windows 用户临时文件），普通数组首次跨边界需要一次 materialization，后续消费者共享 inode。完整的只读 memmap 转发可复用 inode；它不是 ROS 驱动全链路零拷贝，也不是中间件原生 loan。发布后不得修改 payload；已读取的映射在历史淘汰或 Runtime 退出后仍可读。
 
 `async with Runtime(...)` 管理正常关闭、取消和异常回收；独立 lease supervisor 在父进程被杀死时停止 worker，回收部署存储。CPU 阻塞与控制 provider 应隔离，协程 WatchDog 无法抢占同一事件循环内的阻塞代码。
 

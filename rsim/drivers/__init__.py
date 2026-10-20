@@ -10,6 +10,7 @@ from .ros_topics import ROS2Topic
 from .bluesea import BlueSea
 from .odometry import Odometry
 from .native_chassis import NativeChassis, TopicChassis
+from .mujoco import MuJoCo
 
 async def serve(sensor):
     """Hold a provider lease until cancelled."""
@@ -21,3 +22,4 @@ __all__ = ['D435', 'RobinW', 'Camera', 'Hipnuc', 'Mapper', 'STM32', 'Chassis', '
 from rsim.runtime.sharing import SharedProvider, serve_shared
 __all__ += ["SharedProvider", "serve_shared"]
 __all__ += ['Odometry', 'NativeChassis', 'TopicChassis']
+__all__ += ['MuJoCo']

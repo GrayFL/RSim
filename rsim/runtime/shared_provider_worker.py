@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from .platform import install_shutdown
 import signal
 import socket
 import sys
@@ -37,9 +38,7 @@ async def run(directory, listener):
     transport = DescriptorTransport(TransportConfig(**config['transport']))
     lifetime = Component(component, transport)
     stopped = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, stopped.set)
+    install_shutdown(stopped, directory)
     async with Runtime(lifetime, placement=recipe['placement'], _root_ports=False) as runtime:
         transport = transport._canonical or transport
         plan = runtime._binding_plan
@@ -54,7 +53,10 @@ async def run(directory, listener):
         routes = RoutedBindings(bindings, plan)
         config['manifest']['pid'] = os.getpid()
         server = RegistryServer(config['manifest'], ports, routes)
-        await server.start(sock=socket.socket(fileno=listener))
+        if os.name == 'nt':
+            await server.start(path=listener)
+        else:
+            await server.start(sock=socket.socket(fileno=listener))
         stop_task, failure = asyncio.create_task(stopped.wait()), asyncio.create_task(runtime.wait())
         try:
             done, _ = await asyncio.wait((stop_task, failure), return_when=asyncio.FIRST_COMPLETED)
@@ -74,4 +76,4 @@ async def run(directory, listener):
 
 
 if __name__ == '__main__':
-    asyncio.run(run(Path(sys.argv[1]), int(sys.argv[2])))
+    asyncio.run(run(Path(sys.argv[1]), sys.argv[2] if os.name == 'nt' else int(sys.argv[2])))

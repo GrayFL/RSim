@@ -1,7 +1,6 @@
 """Connection-only multi-port views and explicit same-environment providers."""
 import asyncio
 from dataclasses import asdict, dataclass
-import fcntl
 import hashlib
 import json
 import os
@@ -225,6 +224,12 @@ class SharedProvider(SharedComponent):
 
     async def open(self):
         path, lock_path = registry_paths(self.component_key, self.transport.domain_id)
+        if os.name == 'nt':
+            from .windows_sharing import open_provider
+            await open_provider(self)
+            await super().open()
+            return
+        import fcntl
         lock = lock_path.open('a+')
         acquired = False
         try:

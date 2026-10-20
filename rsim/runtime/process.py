@@ -6,6 +6,8 @@ from collections import deque
 import json
 import os
 from pathlib import Path
+from .platform import user_id, spawn_leased
+from rsim.transport.files import storage_root, remove_tree, open_shared
 import sys
 import tempfile
 import uuid
@@ -42,7 +44,7 @@ class ProcessSensor(PrimaryComponent):
     async def open(self):
         self.pending.clear()
         self._remote_sequence = 0
-        self.directory = Path(tempfile.mkdtemp(prefix=f"rsim-{os.getuid()}-", dir="/dev/shm"))
+        self.directory = Path(tempfile.mkdtemp(prefix=f"rsim-{user_id()}-", dir=storage_root()))
         topic = "/rsim/frames/" + "p" + uuid.uuid4().hex
         (self.directory / "factory.pkl").write_bytes(cloudpickle.dumps(self.factory))
         (self.directory / "config.json").write_text(json.dumps({
@@ -50,15 +52,9 @@ class ProcessSensor(PrimaryComponent):
             "transport": asdict(self.transport),
             "sys_path": [str(Path(p).resolve()) for p in sys.path]}))
         self.subscription = self.children[0].subscribe(topic, self.pending.append)
-        lease_read, self._lease = os.pipe()
-        self._log = (self.directory / "worker.log").open("w")
-        try:
-            self.process = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "rsim.runtime.supervisor", str(self.directory), str(lease_read),
-                pass_fds=(lease_read,), start_new_session=True,
-                stdout=self._log, stderr=self._log)
-        finally:
-            os.close(lease_read)
+        self._log = open_shared(self.directory / 'worker.log', write=True, create=True)
+        self.process, self._lease = await spawn_leased('rsim.runtime.supervisor', self.directory,
+                                                       stdout=self._log, stderr=self._log)
         self.task("receive", self.receive, hz=self.hz)
 
     async def receive(self):
@@ -104,5 +100,5 @@ class ProcessSensor(PrimaryComponent):
         if self._log is not None:
             self._log.close()
         if self.directory is not None:
-            shutil.rmtree(self.directory, ignore_errors=True)
+            remove_tree(self.directory, ignore_errors=True)
         self.pending.clear()

@@ -54,6 +54,8 @@ def graph():
     return Map(source(), lambda data: dict(data, mean=float(data['image'].pixels.mean())))
 def mapped_inode(array):
     # The path may already be evicted while the retained mapping stays valid.
+    if os.name == 'nt':
+        return array._rsim_file_id  # Captured with fstat on the mapped file handle.
     address=array.ctypes.data
     for line in Path('/proc/self/maps').read_text().splitlines():
         fields=line.split()

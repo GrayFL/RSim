@@ -126,6 +126,8 @@ ROS2 IMU 包的 `serial_node` 已指向新适配器入口；已有构建使用�
 
 ## 应用组装入口
 
+MuJoCo 的物理、场景转换和传感器实现在 `adapters/mujoco/`，公开工厂为 `drivers.MuJoCo`，CLI 在 `apps/mujoco.py`，设备级运动示例在 `apps/mujoco_motion.py`。它复用既有 `devices.Chassis` 和控制服务；`transport/backends/inprocess.py` 提供显式的同事件循环描述信息传输。接口与扩展约定见 [MuJoCo 后端](mujoco.md)。
+
 `rsim.apps` 组织 CLI 与 Notebook 的运行流程，可以组合 config、drivers、devices、adapters、components 和 runtime。它不作为底层模块的依赖。键盘来源在 adapters，车辆模拟与控制算法在 components，DDS 请求调度在 runtime；示例只调用这些公共实现。底盘远程入口见 [控制文档](control.md)。
 
 `runtime/port_binding.py` 提供两种进程生命周期共同使用的端口端点；`registry.py` 处理有限 JSON 租约协议，`sharing.py` 区分客户端与显式 launcher，`routing.py` 将订阅路由到真实 placement，`provider_supervisor.py` 独立监视源租约。

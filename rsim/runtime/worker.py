@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from .platform import install_shutdown
 import signal
 import sys
 import traceback
@@ -51,9 +52,7 @@ class Export(Component):
 
 async def run(directory):
     stopped = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    loop.add_signal_handler(signal.SIGTERM, stopped.set)
-    loop.add_signal_handler(signal.SIGINT, stopped.set)
+    install_shutdown(stopped, directory)
     config = json.loads((directory / "config.json").read_text())
     # Descendant factories and ROS ingress inherit the same domain/backend.
     os.environ["ROS_DOMAIN_ID"] = str(config["transport"]["domain_id"])

@@ -1,7 +1,8 @@
 """Metered descriptor transport, independent of ROS and array storage.
 
-Both backends use the same DDS domain, topic and CDR String wire type.
-Backend dependencies are loaded only when a Runtime opens the transport.
+DDS backends share the domain, topic and CDR String wire type. The explicit
+inprocess backend stays within one event loop. Optional dependencies load only
+when a Runtime opens the transport.
 """
 from dataclasses import dataclass, field
 import os
@@ -15,8 +16,8 @@ class TransportConfig:
     domain_id: int = field(default_factory=lambda: int(os.environ.get("ROS_DOMAIN_ID", "0")))
 
     def __post_init__(self):
-        if self.backend not in ("cyclonedds", "ros2"):
-            raise ValueError("transport backend must be cyclonedds or ros2")
+        if self.backend not in ("cyclonedds", "ros2", "inprocess"):
+            raise ValueError("transport backend must be cyclonedds, ros2 or inprocess")
         if not isinstance(self.domain_id, int) or not 0 <= self.domain_id <= 232:
             raise ValueError("domain_id must be an integer between 0 and 232")
 
@@ -47,9 +48,12 @@ class DescriptorTransport(Component):
         if self.config.backend == "cyclonedds":
             from .backends.cyclone import CycloneTransport
             self.backend = CycloneTransport(self.config.domain_id)
-        else:
+        elif self.config.backend == "ros2":
             from .backends.ros2 import Ros2Transport
             self.backend = Ros2Transport(self.config.domain_id)
+        else:
+            from .backends.inprocess import InProcessTransport
+            self.backend = InProcessTransport(self.config.domain_id)
         self.backend.open()
         self.task("descriptor-poll", self.poll, hz=self.hz)
 
