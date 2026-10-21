@@ -67,6 +67,7 @@ def test_invalid_output_quaternion_is_not_healthy(tmp_path):
 
 
 def test_wheel_guess_starts_at_session_origin_even_if_mcu_has_moved(tmp_path):
+    pytest.importorskip('nav_msgs.msg', reason='ROS odometry conversion integration')
     from nav_msgs.msg import Odometry
     from graphmap.pose import Pose
     c = component(tmp_path)

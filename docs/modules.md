@@ -1,6 +1,6 @@
 # 包结构与扩展
 
-RSim 按依赖方向和职责组织为八个包。`core` 提供稳定契约，执行、传输、设备接入和业务算法分别实现这些契约。目录分层不增加新的运行时实体：组合仍使用 Component / Signal / CommandSink，扩展仍使用普通 Python 类与工厂函数。
+RSim 按依赖方向和职责组织为九个包。`core` 提供稳定契约，执行、传输、平台原语、设备接入和业务算法分别实现这些契约。目录分层不增加新的运行时实体：组合仍使用 Component / Signal / CommandSink，扩展仍使用普通 Python 类与工厂函数。
 
 ## 代码归属
 
@@ -9,6 +9,9 @@ rsim/
   __init__.py           按需加载的公共便捷入口
   core/                组件、端口、数据模型、时钟与组合
   runtime/             图执行、进程放置、共享源租约、监督与资源锁
+  platforms/           标准库边界：进程树、IPC、锁、身份、路径与文件原语
+    linux/             UID / flock / Unix stream / 进程组
+    windows/           SID / ACL / LockFileEx / loopback / Job Object
   transport/           DDS 描述信息、命令通道、共享数组与编解码
     backends/          Cyclone DDS / ROS2 实现
   adapters/            协议和外部系统适配
@@ -26,6 +29,7 @@ rsim/
 | --- | --- | --- |
 | `core` | Component 的任务与 WatchDog、Signal 历史、CommandSink、Frame、Metronome、组合与时间同步 | 启动进程、ROS、DDS、设备配置 |
 | `runtime` | Runtime 图解析和生命周期顺序、placement、worker / supervisor、共享源租约与物理锁 | 设备消息解码和业务算法 |
+| `platforms` | OS 原语、平台检测、文件系统能力探测和权限校验 | 图策略、NPY、DDS、业务端口 |
 | `transport` | 描述信息收发、共享存储、命令请求应答、封闭数据 codec | 图放置策略、硬件驱动 |
 | `adapters` | 外部协议、采集资源、标准 ROS 消息转换 | 应用侧设备选择、EKF 等算法 |
 | `devices` | 不启动驱动的连接视图、设备身份与共享数据约定 | 导入 ROS / 串口驱动或打开物理设备 |
@@ -55,14 +59,18 @@ flowchart TD
     Devices --> Runtime[runtime]
     Adapters --> Runtime
     Runtime --> Transport[transport]
+    Runtime --> Platforms[platforms]
+    Transport --> Platforms
     Transport --> Core[core]
     Components[components] --> Core
     Components --> Transport
 ```
 
-`core` 只依赖自身与基础 Python/NumPy 能力；`transport` 只向 `core` 依赖；`runtime` 只向 `core` 和 `transport` 依赖。设备适配和工厂不能被这三个包反向导入。`components` 对 `transport` 的依赖只用于合成数据源直接分配共享数组；EKF 和运动控制仅使用核心端口与 graphmap。
+`core` 只依赖自身与基础 Python/NumPy 能力；`platforms` 只依赖自身和标准库；`transport` 向 `core/platforms` 依赖；`runtime` 向 `core/transport/platforms` 依赖。设备适配和工厂不能被这些基础包反向导入。`components` 对 `transport` 的依赖只用于合成数据源直接分配共享数组；EKF 和运动控制仅使用核心端口与 graphmap。
 
 `Signal` 通过 Runtime 安装的边界回调处理数据共享，自身不认识 mmap 或 DDS。这使本地执行保持普通对象引用，部署到进程时才安装传输绑定。`Runtime` 从旧的核心模块分离，`Component` 仍保留任务注册和自身生命周期状态，避免为了拆目录再增加调度器接口。
+
+需求由 Runtime 的 DemandTracker 独立记录，prepare hook 只负责物化；MuJoCo 工作线程接收不可变需求快照。统一监督、配置和平台接口见 [跨平台运行时](runtime.md)。
 
 `rsim.__init__` 是应用便捷入口，按访问的名称加载所属包。内部代码直接导入所属包，避免通过根入口反向加载集成层。仅导入 `rsim.core` 不加载 Runtime、驱动或可选依赖；普通公共入口和设备客户端不要求 ROS、串口、OpenCV 或 graphmap。几何、配置和运动功能在显式访问时加载其可选依赖。星号导入保留原有基础导出集合，不自动加载这些可选功能。
 
@@ -130,4 +138,4 @@ MuJoCo 的物理、场景转换和传感器实现在 `adapters/mujoco/`，公开
 
 `rsim.apps` 组织 CLI 与 Notebook 的运行流程，可以组合 config、drivers、devices、adapters、components 和 runtime。它不作为底层模块的依赖。键盘来源在 adapters，车辆模拟与控制算法在 components，DDS 请求调度在 runtime；示例只调用这些公共实现。底盘远程入口见 [控制文档](control.md)。
 
-`runtime/port_binding.py` 提供两种进程生命周期共同使用的端口端点；`registry.py` 处理有限 JSON 租约协议，`sharing.py` 区分客户端与显式 launcher，`routing.py` 将订阅路由到真实 placement，`provider_supervisor.py` 独立监视源租约。
+`runtime/port_binding.py` 提供两种进程生命周期共同使用的端口端点；`registry.py` 处理有限 JSON 租约协议，`sharing.py` 区分客户端与显式 launcher，`routing.py` 将订阅路由到真实 placement，`shared_supervisor.py` 独立监视源租约。

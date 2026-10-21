@@ -15,6 +15,34 @@ from process_support import alive
 pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Windows native primitives')
 
 
+def test_job_worker_inherits_only_the_explicit_handle_list():
+    import ctypes
+    from ctypes import wintypes as w
+    from rsim.platforms.windows.identity import bind
+    from rsim.platforms.windows.process import JobProcess
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [('size', w.DWORD), ('descriptor', w.LPVOID), ('inherit', w.BOOL)]
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    create = bind(kernel, 'CreateEventW', w.HANDLE, [ctypes.POINTER(SecurityAttributes), w.BOOL, w.BOOL, w.LPCWSTR])
+    wait = bind(kernel, 'WaitForSingleObject', w.DWORD, [w.HANDLE, w.DWORD])
+    close = bind(kernel, 'CloseHandle', w.BOOL, [w.HANDLE])
+    attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), None, True)
+    event = create(ctypes.byref(attributes), True, False, None)
+    assert event
+    child = None
+    try:
+        code = ('import ctypes,sys; from ctypes import wintypes as w; '
+                'fn=ctypes.WinDLL("kernel32").SetEvent; fn.argtypes=[w.HANDLE]; '
+                'fn.restype=w.BOOL; fn(int(sys.argv[1]))')
+        child = JobProcess([sys.executable, '-c', code, str(event)])
+        assert child.wait(timeout=5) == 0
+        assert wait(event, 0) == 258  # An accidentally inherited event would be signalled.
+    finally:
+        if child is not None:
+            child.close()
+        close(event)
+
+
 def test_job_owner_death_kills_worker_and_unmanaged_grandchild(tmp_path):
     ready = tmp_path / 'ready.json'
     worker = """
@@ -26,7 +54,7 @@ time.sleep(60)
 """
     owner = """
 import sys,time
-from rsim.runtime.windows_process import JobProcess
+from rsim.platforms.windows.process import JobProcess
 worker=JobProcess([sys.executable,'-c',sys.argv[1],sys.argv[2]])
 time.sleep(60)
 """
@@ -51,14 +79,15 @@ time.sleep(60)
 
 
 def test_local_endpoint_rejects_wrong_token_before_dispatch(tmp_path):
-    from rsim.runtime import local_socket
+    from rsim.platforms import get_platform
     async def run():
         called = []
         async def handler(reader, writer):
             called.append(True)
             writer.close()
-        path = tmp_path / 'endpoint.sock'
-        server = await local_socket.start_server(handler, path=path)
+        from rsim.platforms.paths import new_directory
+        path = new_directory(prefix='ipc-', root=tmp_path) / 'endpoint.sock'
+        server = await get_platform().ipc.start_server(handler, path=path)
         try:
             endpoint = json.loads(path.read_text())
             reader, writer = await asyncio.open_connection(endpoint['host'], endpoint['port'])
@@ -68,7 +97,7 @@ def test_local_endpoint_rejects_wrong_token_before_dispatch(tmp_path):
             assert not called
             writer.close()
             await writer.wait_closed()
-            reader, writer = await local_socket.open_connection(path)
+            reader, writer = await get_platform().ipc.open_connection(path)
             await reader.read(1)
             assert called == [True]
             writer.close()

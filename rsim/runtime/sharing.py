@@ -1,16 +1,9 @@
 """Connection-only multi-port views and explicit same-environment providers."""
-import asyncio
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import hashlib
 import json
-import os
 from pathlib import Path
-import socket
-import subprocess
-import sys
-import tempfile
-import threading
-import uuid
+import math
 
 from rsim.core import Component, CommandSink, ComponentError, PortNotBound, ProviderDisconnected
 from rsim.transport.descriptor import DescriptorTransport, transport_config
@@ -30,9 +23,10 @@ class PortSpec:
     fallback: object = None
 
     def __post_init__(self):
-        if self.direction not in ('signal', 'sink') or self.history_capacity < 1:
+        if (self.direction not in ('signal', 'sink') or not isinstance(self.history_capacity, int)
+                or self.history_capacity < 1):
             raise ValueError('invalid port declaration')
-        if self.direction == 'sink' and (self.max_ttl is None or self.max_ttl <= 0):
+        if self.direction == 'sink' and (self.max_ttl is None or not math.isfinite(self.max_ttl) or self.max_ttl <= 0):
             raise ValueError('sink declarations require max_ttl')
 
     def manifest(self):
@@ -49,14 +43,22 @@ def component_ports(component):
     return ports
 
 
-async def describe_shared(key, *, transport=None):
+async def describe_shared(key, *, transport=None, options=None):
     """Explicitly discover metadata before constructing a dynamic logical view."""
     config = transport_config(transport)
-    connection = await Connection.connect(registry_paths(key, config.domain_id)[0])
+    from .locks import locked
+    from .options import RuntimeOptions
+    options = (options or RuntimeOptions()).resolved()
+    path, lock_path = registry_paths(key, config.domain_id, options)
+    lock = await locked(lock_path, options.startup_timeout_s)
+    connection = None
     try:
+        connection = await Connection.connect(path)
         return await connection.request('describe')
     finally:
-        await connection.close()
+        if connection is not None:
+            await connection.close()
+        lock.close()
 
 
 class SharedComponent(Component):
@@ -65,7 +67,8 @@ class SharedComponent(Component):
     This class never accepts a factory, starts a provider, imports driver code,
     or changes interpreters. Closing it releases this session's subscriptions.
     """
-    def __init__(self, *, key, ports, interface_version='ports-v1', transport=None):
+    def __init__(self, *, key, ports, interface_version='ports-v1', transport=None, options=None):
+        self.options = options
         self.transport = transport_config(transport)
         super().__init__(DescriptorTransport(self.transport))
         self.component_key, self.interface_version = key, interface_version
@@ -75,7 +78,10 @@ class SharedComponent(Component):
             raise ValueError('a shared view needs a nonempty key')
         contract = json.dumps({name: spec.manifest() for name, spec in self.port_specs.items()}, sort_keys=True)
         digest = hashlib.sha256(contract.encode()).hexdigest()
-        self.key = (f'shared-view:{type(self).__name__}:{self.transport}:{key}:{interface_version}:{digest}')
+        # Explicit discovery roots are part of view identity, even when key and
+        # port contracts match. Inherited options resolve once at Runtime open.
+        scope = repr(options.paths.resolved()) if options is not None else 'runtime-options'
+        self.key = (f'shared-view:{type(self).__name__}:{self.transport}:{key}:{interface_version}:{digest}:{scope}')
         self.connection = None
         self.manifest = None
         self.bindings, self.endpoints, self._port_users = {}, {}, {}
@@ -98,12 +104,21 @@ class SharedComponent(Component):
             setattr(self, name, port)
 
     async def open(self):
+        from .locks import locked
+        self.options = (self.options or self._runtime.options).resolved()
         if self.connection is None:
-            self.connection = await Connection.connect(registry_paths(self.component_key, self.transport.domain_id)[0])
-        manifest = await self.connection.request('describe')
+            path, lock_path = registry_paths(self.component_key, self.transport.domain_id, self.options)
+            lock = await locked(lock_path, self.options.startup_timeout_s)
+            try:
+                self.connection = await Connection.connect(path)
+                manifest = await self.connection.request('describe')
+            finally:
+                lock.close()
+        else:
+            manifest = await self.connection.request('describe')
         if (manifest.get('protocol_version') != PROTOCOL or manifest['component_key'] != self.component_key
                 or manifest['interface_version'] != self.interface_version
-                or manifest['host_id'] != host_id() or manifest['domain_id'] != self.transport.domain_id):
+                or manifest['host_id'] != host_id(self.options) or manifest['domain_id'] != self.transport.domain_id):
             raise ComponentError('incompatible shared provider manifest')
         expected_version = getattr(self, 'provider_version', None)
         if isinstance(self, SharedProvider) and manifest['provider_version'] != expected_version:
@@ -177,6 +192,7 @@ class SharedComponent(Component):
         manifest = await self.connection.request('describe')
         if manifest['instance_id'] != self.manifest['instance_id']:
             raise ProviderDisconnected('provider instance changed')
+        self.manifest = manifest
         for name, endpoint in tuple(self.endpoints.items()):
             error = manifest.get('port_errors', {}).get(name) or endpoint._failure
             if error is not None and name in self.outputs:
@@ -207,89 +223,29 @@ class SharedProvider(SharedComponent):
     """
     def __init__(self, component=None, *, factory=None, ports=None, key,
                  interface_version='ports-v1', provider_version='1', transport=None, placement=None,
-                 log_path=None):
+                 log_path=None, options=None):
         if (component is None) == (factory is None):
             raise ValueError('supply a component or a local provider factory')
         if component is not None:
             ports = component_ports(component) if ports is None else ports
         if ports is None:
             raise ValueError('a lazy provider factory requires known ports')
-        super().__init__(key=key, ports=ports, interface_version=interface_version, transport=transport)
+        super().__init__(key=key, ports=ports, interface_version=interface_version, transport=transport, options=options)
         self.component, self.factory = component, factory
         self.provider_version, self.provider_placement = provider_version, placement
         # Explicit launchers must not be merged with connection-only views.
         self.key = None
         self.directory = None
         self.log_path = Path(log_path).expanduser().resolve() if log_path is not None else None
+        self._explicit_log_path = self.log_path
 
     async def open(self):
-        path, lock_path = registry_paths(self.component_key, self.transport.domain_id)
-        if os.name == 'nt':
-            from .windows_sharing import open_provider
-            await open_provider(self)
-            await super().open()
-            return
-        import fcntl
-        lock = lock_path.open('a+')
-        acquired = False
-        try:
-            # Holding the lock for the worker lifetime excludes competing
-            # launchers even while the provider graph is still starting.
-            async with asyncio.timeout(30):
-                while True:
-                    try:
-                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        acquired = True
-                        break
-                    except BlockingIOError:
-                        try:
-                            self.connection = await Connection.connect(path)
-                            break
-                        except ProviderDisconnected:
-                            await asyncio.sleep(.02)
-            if acquired:
-                await self._launch(path, lock)
-        finally:
-            # Do not LOCK_UN: the inherited open file description owns the lock.
-            lock.close()
+        from .shared_launch import open_provider
+        if self.transport.backend == 'inprocess':
+            raise ValueError('SharedProvider requires a real cross-process DDS backend')
+        self.options = (self.options or self._runtime.options).resolved()
+        await open_provider(self)
         await super().open()
-
-    async def _launch(self, path, lock):
-        import cloudpickle
-        import shutil
-        directory = Path(tempfile.mkdtemp(prefix=f'rsim-provider-{os.getuid()}-', dir='/dev/shm'))
-        self.directory = directory
-        listener = socket.socket(socket.AF_UNIX)
-        initial_server, initial_client = socket.socketpair()
-        try:
-            path.unlink(missing_ok=True)
-            listener.bind(str(path))
-            listener.listen(128)
-            recipe = dict(component=self.component, factory=self.factory, placement=self.provider_placement)
-            (directory / 'recipe.pkl').write_bytes(cloudpickle.dumps(recipe))
-            manifest = dict(protocol_version=PROTOCOL, component_key=self.component_key,
-                            instance_id=uuid.uuid4().hex, interface_version=self.interface_version,
-                            provider_version=self.provider_version, host_id=host_id(),
-                            domain_id=self.transport.domain_id,
-                            ports={name: spec.manifest() for name, spec in self.port_specs.items()})
-            (directory / 'config.json').write_text(json.dumps(dict(manifest=manifest,
-                transport=asdict(self.transport), sys_path=[str(Path(p).resolve()) for p in sys.path])))
-            log_path = self.log_path or directory / 'worker.log'
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            with log_path.open('a') as log:
-                process = subprocess.Popen([sys.executable, '-m', 'rsim.runtime.provider_supervisor',
-                    str(directory), str(listener.fileno()), str(initial_server.fileno()),
-                    str(lock.fileno()), str(path)], pass_fds=(listener.fileno(), initial_server.fileno(), lock.fileno()),
-                    start_new_session=True, stdout=log, stderr=log)
-            threading.Thread(target=process.wait, daemon=True, name='rsim-provider-reaper').start()
-            self.connection = Connection(*await asyncio.open_unix_connection(sock=initial_client))
-        except BaseException:
-            initial_client.close()
-            shutil.rmtree(directory, ignore_errors=True)
-            raise
-        finally:
-            listener.close()
-            initial_server.close()
 
 
 async def serve_shared(provider):

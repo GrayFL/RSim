@@ -1,13 +1,13 @@
 """Exercise the real native driver against a PTY; never opens a hardware port."""
 import asyncio
 import os
-import pty
 import struct
 import threading
 import time
 import uuid
 
 import pytest
+pty = pytest.importorskip('pty', reason='native Linux ROS2 driver uses a POSIX pseudo-terminal')
 
 from rsim import Runtime, VelocityCommand, ProcessPlacement
 from rsim.core.commands import CommandRejected

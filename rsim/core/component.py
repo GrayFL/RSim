@@ -6,6 +6,7 @@ from typing import Awaitable, Callable
 from .errors import ComponentError
 from .signal import Signal, as_signal
 from .metronome import Metronome
+from .demand import DemandSnapshot
 
 class Component:
     """A running resource/computation, with zero or more named output Signals.
@@ -47,6 +48,16 @@ class Component:
 
     def signal(self, name, *, history=32, clock=None):
         return Signal(self, name, history=history, clock=clock)
+
+    def demand_snapshot(self):
+        """Read on the event loop, then pass this immutable value to worker threads."""
+        target = self._binding or self._canonical or self
+        if target._runtime is None:
+            return DemandSnapshot()
+        return target._runtime.demand.snapshot(target)
+
+    def has_demand(self, *port_names):
+        return self.demand_snapshot().has(*port_names)
 
     def expose(self, name, signal):
         """Expose an existing Signal, preserving its producer, history and identity.

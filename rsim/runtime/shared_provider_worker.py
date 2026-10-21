@@ -4,9 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from .platform import install_shutdown
-import signal
-import socket
+from rsim.platforms import get_platform
 import sys
 
 import cloudpickle
@@ -14,6 +12,8 @@ import cloudpickle
 from rsim.core import Component
 from rsim.transport.descriptor import DescriptorTransport, TransportConfig
 from .graph import Runtime
+from .options import RuntimeOptions
+from .worker import write_status
 from .port_binding import PortBinding
 from .registry import RegistryServer
 from .routing import RoutedBindings
@@ -38,8 +38,8 @@ async def run(directory, listener):
     transport = DescriptorTransport(TransportConfig(**config['transport']))
     lifetime = Component(component, transport)
     stopped = asyncio.Event()
-    install_shutdown(stopped, directory)
-    async with Runtime(lifetime, placement=recipe['placement'], _root_ports=False) as runtime:
+    get_platform().process.install_shutdown(stopped, directory)
+    async with Runtime(lifetime, placement=recipe['placement'], options=RuntimeOptions.from_dict(config.get('options')), _root_ports=False) as runtime:
         transport = transport._canonical or transport
         plan = runtime._binding_plan
         if plan and any(isinstance(spec, ProcessPlacement) and spec.transport.domain_id != transport.config.domain_id
@@ -53,10 +53,8 @@ async def run(directory, listener):
         routes = RoutedBindings(bindings, plan)
         config['manifest']['pid'] = os.getpid()
         server = RegistryServer(config['manifest'], ports, routes)
-        if os.name == 'nt':
-            await server.start(path=listener)
-        else:
-            await server.start(sock=socket.socket(fileno=listener))
+        await server.start(path=listener)
+        write_status(directory, dict(pid=os.getpid(), ready=True, instance_id=config['manifest']['instance_id']))
         stop_task, failure = asyncio.create_task(stopped.wait()), asyncio.create_task(runtime.wait())
         try:
             done, _ = await asyncio.wait((stop_task, failure), return_when=asyncio.FIRST_COMPLETED)
@@ -76,4 +74,4 @@ async def run(directory, listener):
 
 
 if __name__ == '__main__':
-    asyncio.run(run(Path(sys.argv[1]), sys.argv[2] if os.name == 'nt' else int(sys.argv[2])))
+    asyncio.run(run(Path(sys.argv[1]), sys.argv[2]))

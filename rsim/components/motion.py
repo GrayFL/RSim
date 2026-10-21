@@ -155,7 +155,10 @@ class ChassisController(Component):
 
     async def stop(self):
         """Interrupt the current movement and acknowledge a zero command."""
-        self._available()
+        # A failed controller must still attempt the safe command during service
+        # recovery. Motion entry points keep the stricter _available() check.
+        if self._binding is not None or self._closed or self._closing:
+            raise MotionError('controller is not running') from self._failure
         movement, self._movement = self._movement, None
         try:
             await self._zero()

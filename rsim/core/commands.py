@@ -145,6 +145,9 @@ class CommandSink(Generic[T]):
             raise PortNotBound(f"command port {self.name!r} was not requested")
         if not self._active or self.producer._closed or self.producer._closing:
             raise ComponentError("command provider is closed")
+        if not self.producer._runtime.accepting:
+            if _writer is None or command != self.fallback:
+                raise ComponentError('runtime is stopping; only owner fallback is allowed')
         claim = self.producer._runtime._command_claims.get(self)
         if claim is not None and claim is not _writer:
             raise CommandRejected("sink owned by Connect; send through its CommandMux")

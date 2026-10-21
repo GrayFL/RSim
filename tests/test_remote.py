@@ -10,6 +10,7 @@ import types
 
 import numpy as np
 import pytest
+pytest.importorskip('fcntl', reason='Linux ROS1 agent integration')
 
 from rsim import Bundle, Chassis, ProcessSensor, Ros1Bridge, Runtime, SSHConfig, SensorError
 from rsim.core.model import Frame

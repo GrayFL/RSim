@@ -2,7 +2,6 @@ import asyncio
 from binascii import crc_hqx
 import math
 import os
-import pty
 import struct
 
 import pytest
@@ -68,6 +67,7 @@ def test_imusol_missing_data_invalid_and_bounded_buffer():
 
 
 def test_serial_async_pty_lock_timeout_and_cleanup():
+    pty = pytest.importorskip('pty', reason='POSIX pseudo-terminal integration')
     async def run():
         master, slave = pty.openpty()
         port = os.ttyname(slave)
@@ -95,6 +95,7 @@ def test_serial_async_pty_lock_timeout_and_cleanup():
 
 @pytest.mark.parametrize("mode", ["serial", "ros2"])
 def test_shared_provider_fanout_and_ros_parameters(mode, tmp_path):
+    pty = pytest.importorskip('pty', reason='POSIX pseudo-terminal integration')
     if mode == "ros2":
         pytest.importorskip("rclpy")
         from ament_index_python.packages import get_package_prefix, PackageNotFoundError

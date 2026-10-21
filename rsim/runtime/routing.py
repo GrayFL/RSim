@@ -8,6 +8,7 @@ class RoutedBindings:
     def __init__(self, local, plan):
         self.local, self.plan = local, plan if plan and plan.directory else None
         self.connections, self.remote, self.remote_errors = {}, {}, {}
+        self.remote_diagnostics = {}
 
     def route(self, port):
         if self.plan is None or not self.plan.directory:
@@ -50,6 +51,7 @@ class RoutedBindings:
         for group, (connection, _) in self.connections.items():
             try:
                 state = await connection.request('describe')
+                self.remote_diagnostics[group] = state.get('transport_stats', {})
                 errors = state.get('port_errors', {})
                 for port, identifier in self.plan.port_ids.items():
                     if identifier in errors:
@@ -69,3 +71,6 @@ class RoutedBindings:
         for connection, _ in self.connections.values():
             await connection.close()
         await self.local.close()
+
+    def diagnostics(self):
+        return dict(local=self.local.diagnostics(), placements=dict(self.remote_diagnostics))

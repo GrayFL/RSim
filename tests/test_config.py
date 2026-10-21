@@ -11,7 +11,15 @@ from rsim import Component, Runtime
 from rsim.config import load_rig, read_config, Mount, UncalibratedMount
 
 
-def test_reference_geometry_nested_reuse_and_unknown_mounts():
+def test_reference_geometry_nested_reuse_and_unknown_mounts(tmp_path):
+    import yaml
+    config = {'rsim': {'sensors': {
+        'imu': {'driver': 'hipnuc', 'mount': {'status': 'unknown'}},
+        'rgb': {'driver': 'd435', 'mount': {'status': 'measured', 'position': [.12,.02,1.07], 'rotation': [0,1.9,1.8]}},
+        'lidar3d': {'driver': 'robinw', 'mount': {'status': 'measured', 'position': [.09,-.01,.96], 'rotation': [0,-.1,1.5]}}},
+        'assemblies': {'inertial': ['imu'], 'perception': ['imu', 'rgb', 'lidar3d'], 'robot': ['perception', 'inertial']}}}
+    path = tmp_path / 'sensors.yaml'
+    path.write_text(yaml.safe_dump(config), encoding='utf-8')
     class Source(Component):
         def __init__(self, **parameters):
             super().__init__()
@@ -22,7 +30,7 @@ def test_reference_geometry_nested_reuse_and_unknown_mounts():
             await self.imu.publish(np.arange(3), stamp_ns=1, clock="test")
 
     async def run():
-        rig = load_rig(Path(__file__).parents[1]/"configs/sensors.yaml", select="robot",
+        rig = load_rig(path, select="robot",
                        factories=dict.fromkeys(("hipnuc", "d435", "robinw"), Source))
         assert rig["robot"]["perception"]["imu"] is rig["inertial"]["imu"] is rig["imu"]
         rgb = Pose(position=[.12,.02,1.07], rotation=[0,1.9,1.8], wrd_frame="base_footprint", ego_frame="rgb")
@@ -75,4 +83,4 @@ def test_connection_only_recipe_does_not_load_serial_or_ros(tmp_path):
         "mount": {"status": "unknown"}}}}}))
     rig = load_rig(path, providers=False)
     assert rig["imu"].source.factory is None
-    assert rig["imu"].source.source_key == "hipnuc:/dev/ttyUSB99"
+    assert rig["imu"].source.source_key == 'hipnuc:' + str(Path('/dev/ttyUSB99').resolve())

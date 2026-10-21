@@ -481,6 +481,7 @@ def test_expired_scans_are_dropped_before_waiting_for_rgb(monkeypatch):
 
 
 def test_imu_ingress_retains_a_burst_in_source_time_order():
+    pytest.importorskip('sensor_msgs.msg', reason='ROS message conversion integration')
     from sensor_msgs.msg import Imu
     from rsim.core import Component
     from rsim.adapters.ros2.sensor import RosSensor

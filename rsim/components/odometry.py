@@ -155,6 +155,7 @@ class PlanarOdometry(Component):
         self._pending = {name: deque(maxlen=max(128, sig.history_size))
                          for name, sig in (("imu", self.imu), ("odom", self.odom))}
         self._clock = self._world = self._body = self._gyro_frame = None
+        self._episodes = {}
         self.dropped = 0
         self.task("fuse", self._fuse, hz=self.hz)
 
@@ -198,6 +199,10 @@ class PlanarOdometry(Component):
                 if frame.sequence <= self._seen[name]:
                     continue
                 self._seen[name] = frame.sequence
+                episode = frame.metadata.get('episode')
+                if name in self._episodes and self._episodes[name] != episode:
+                    raise ValueError('sensor episode changed; rebuild Runtime to reset localization')
+                self._episodes[name] = episode
                 if self._clock is None:
                     self._clock = frame.clock
                 if frame.clock != self._clock:
@@ -248,6 +253,7 @@ class PlanarOdometry(Component):
                         wrd_frame=self._world, ego_frame=self._body)
             # Preserve the older reception time for controller freshness checks.
             meta = dict(stamp_ns=odom.stamp_ns, clock=self._clock,
+                        metadata=dict(odom.metadata, pose_kind='estimate'),
                         received_ns=min(odom.received_ns, self._gyro_frame.received_ns))
             await self.pose.publish(pose, **meta)
             await self.estimate.publish({"pose": pose, "covariance": ekf.P.copy(),

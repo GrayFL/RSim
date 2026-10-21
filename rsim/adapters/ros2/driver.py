@@ -51,7 +51,7 @@ class Driver(Component):
         self.process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "rsim.runtime.exec",
+            "rsim.platforms.linux.exec",
             str(os.getpid()),
             *args,
             stdout=self._log or asyncio.subprocess.DEVNULL,

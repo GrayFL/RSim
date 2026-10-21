@@ -10,16 +10,25 @@ from pathlib import Path
 import secrets
 
 
+def endpoint_identity(path):
+    from .files import open_shared, identity
+    with open_shared(path) as file:
+        return identity(file)
+
+
 def write_endpoint(path, port, token):
     path = Path(path)
     temporary = path.with_suffix('.endpoint.tmp')
     temporary.write_text(json.dumps(dict(protocol=1, host='127.0.0.1', port=port, token=token)), encoding='utf-8')
+    from .paths import secure_new
+    secure_new(temporary)
     temporary.replace(path)
 
 
 async def open_connection(path, *, limit=65536):
-    if os.name != 'nt':
-        return await asyncio.open_unix_connection(str(path), limit=limit)
+    from .paths import validate_private
+    validate_private(Path(path).parent)
+    validate_private(path)
     endpoint = json.loads(Path(path).read_text(encoding='utf-8'))
     if endpoint.get('protocol') != 1 or endpoint.get('host') != '127.0.0.1':
         raise ConnectionError('invalid local endpoint')
@@ -38,8 +47,8 @@ async def open_connection(path, *, limit=65536):
 
 
 async def start_server(callback, *, path=None, sock=None, limit=65536):
-    if os.name != 'nt':
-        return await asyncio.start_unix_server(callback, path=path, sock=sock, limit=limit)
+    from .paths import validate_private
+    validate_private(Path(path).parent)
     if path is None or sock is not None:
         raise ValueError('Windows local server requires an endpoint record path')
     token = secrets.token_hex(32)

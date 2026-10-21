@@ -68,16 +68,18 @@ python -m rsim.apps.mujoco_motion --connect mujoco --domain 0 --output assets/mu
 | 完整映射转发 | 硬链接复用 inode | NTFS 硬链接复用文件 ID |
 | 本地注册表/源租约 | Unix socket | 127.0.0.1 TCP + 每端点随机令牌 |
 | 私有 Runtime 租约 | 继承管道描述符 | 显式继承管道 HANDLE |
-| 源启动互斥 | flock | msvcrt 字节区间锁，串行化启动和最后租约关闭 |
+| 源启动互斥 | flock | LockFileEx，串行化启动和最后租约关闭 |
 | worker 树回收 | 进程组 / 父进程死亡信号 | 挂起创建、加入 Job Object、恢复执行；最后 Job 句柄关闭时回收进程树 |
 | 正常停止 | SIGTERM | 停止文件触发协程清理；超时终止 Job |
 | 时钟实例身份 | boot UUID | boot GUID |
 
 Windows 映射使用文件作为后备存储，可以产生磁盘 I/O；没有宣称与 tmpfs 的性能相同。首次数组进入共享存储仍可能复制，完整的只读映射转发复用文件页；不代表传感器驱动端到端零拷贝。
 
+原语位于 `rsim.platforms.windows`，两个平台共用 `runtime.supervision/shared_launch/shared_supervisor` 策略。路径、startup/shutdown 参数、私有 ACL、SID namespace 和诊断入口见 [跨平台运行时](runtime.md)。`doctor --require shared-mapping --deep` 会在实际存储卷测试独立子进程保留映射和硬链接，并报告文件系统。已有开发环境中的双解释器检查见 [本地测试](validation.md)。
+
 监督进程与计算进程隔离，计算循环挂起也不阻碍监督者接收最后租约断开。worker 在运行任何 Python 代码前就被加入 Job；监督者被强制结束时，OS 负责关闭 Job。独立共享源的监督者显式脱离上层 Job，保持“创建者退出、其他使用者仍可继续”的契约。
 
-实现位置：`runtime/platform.py`、`windows_process.py`、`local_socket.py`、`windows_sharing.py`、`windows_shared_supervisor.py`；共享数组文件逻辑在 `transport/files.py`。Linux 继续使用已有 Unix 注册表及共享 provider 监督路径。
+Windows 进程、IPC、文件和锁分别位于 `platforms/windows/process.py`、`ipc.py`、`files.py` 和 `locks.py`；Linux 原语位于 `platforms/linux/`。共享数组编码位于 `transport/files.py`，运行时直接使用所选平台的原语。
 
 原语依据：[Microsoft Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)。
 
@@ -86,15 +88,14 @@ Windows 映射使用文件作为后备存储，可以产生磁盘 I/O；没有�
 在安装测试依赖后执行：
 
 ```sh
-python -m pip install -e ".[dds,test]"
-python -m pytest tests/test_process.py tests/test_parent_death.py tests/test_placement.py tests/test_host.py tests/test_host_cross_process.py tests/test_shared.py tests/test_shared_component.py tests/test_windows_runtime.py tests/test_chassis_service.py tests/test_motion.py -q
+python -m pytest tests/test_process.py tests/test_parent_death.py tests/test_placement.py tests/test_host.py tests/test_host_cross_process.py tests/test_shared.py tests/test_shared_component.py tests/test_windows_runtime.py -q -k "not ros2"
 ```
 
 跨环境检查在 PowerShell 中显式选择已安装 DDS、NumPy、cloudpickle 和 RSim 的另一个解释器：
 
 ```powershell
 $env:RSIM_TEST_CLIENT_PYTHON = "path/to/client/python.exe"
-python -m pytest tests/test_cross_environment.py tests/test_shared_component.py tests/test_chassis_service.py -q
+python -m pytest tests/test_cross_environment.py tests/test_shared_component.py -q -k "cross_environment and cyclonedds"
 ```
 
 测试覆盖真实进程 PID、相同文件标识、映射在淘汰和退出后可读、命令 TTL、客户端死亡、worker 崩溃/挂起、父进程死亡、Job 所有者死亡、配置冲突、重启身份隔离和 ROS 导入禁止。未安装 ROS2 的环境会跳过 ROS2 后端互通测试，不能据此宣称已验证 ROS2 本身。

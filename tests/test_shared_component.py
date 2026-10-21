@@ -122,8 +122,8 @@ def test_exact_dynamic_ports_retained_identity_and_independent_leases(placed):
                         copy = await another.map.get(timeout=10)
                         assert second.bindings['map']['binding_id'] == another.bindings['map']['binding_id']
                         assert frame.sample_id == copy.sample_id
-                        a, b = os.stat(frame.data.filename), os.stat(copy.data.filename)
-                        assert (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+                        from rsim.transport.files import backing_identity
+                        assert backing_identity(frame.data) == backing_identity(copy.data)
                         # Launcher is just another source lease.
                         await launcher.aclose()
                         assert (await first.pose.get(after=pose.sequence, timeout=2)).sample_id != pose.sample_id
@@ -201,6 +201,37 @@ def test_manifest_only_and_simultaneous_views_share_one_importer():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('field', ['host_id', 'interface_version', 'protocol_version', 'clock', 'direction', 'max_ttl'])
+def test_incompatible_manifest_is_rejected_before_any_subscription(field):
+    from rsim.core import ComponentError
+    async def run():
+        key = 'incompatible:' + uuid.uuid4().hex
+        provider = SharedProvider(MappingFixture(), key=key)
+        async with Runtime(provider, _root_ports=False):
+            client = view(key)
+            client.connection = await Connection.connect(registry_paths(key, provider.transport.domain_id)[0])
+            original = client.connection.request
+            operations = []
+            async def changed(op, **fields):
+                operations.append(op)
+                result = await original(op, **fields)
+                if op == 'describe':
+                    if field in ('host_id', 'interface_version', 'protocol_version'):
+                        result[field] = 'incompatible'
+                    else:
+                        result['ports']['map'][field] = 'incompatible'
+                return result
+            client.connection.request = changed
+            with pytest.raises(ComponentError, match='incompatible'):
+                async with Runtime(client.map):
+                    pass
+            assert operations == ['describe']
+            healthy = view(key)
+            async with Runtime(healthy.map):
+                assert (await healthy.map.get(timeout=5)).sample_id is not None
+    asyncio.run(run())
+
+
 def test_independent_guard_cleans_blocked_provider_after_launcher_dies():
     import signal
     async def run():
@@ -229,29 +260,41 @@ def test_v2_cross_environment_client_and_placement_do_not_import_ros(tmp_path, b
         pytest.skip('set RSIM_TEST_CLIENT_PYTHON to select the independent client interpreter')
     if backend == 'ros2':
         pytest.importorskip('rclpy', exc_type=ImportError)
+    class MappingControlFixture(MappingFixture):
+        def __init__(self):
+            super().__init__()
+            self.feedback = self.signal('feedback', clock='test')
+            self.velocity = CommandSink(self, 'velocity', self.apply, fallback=VelocityCommand())
+        async def apply(self, command):
+            await self.feedback.publish(command.value, stamp_ns=1, clock='test')
     code = '''
 import asyncio, json, os, sys
 from pathlib import Path
 import numpy as np
-from rsim import Runtime, SharedComponent, PortSpec, ProcessPlacement, Map, TransportConfig
+from rsim import Runtime, SharedComponent, PortSpec, ProcessPlacement, Map, TransportConfig, VelocityCommand
+from rsim.transport.files import backing_identity
 key = sys.argv[1]
-source = SharedComponent(key=key, ports={'map': PortSpec(clock='test')}, transport=TransportConfig('cyclonedds', 78))
+source = SharedComponent(key=key, ports={'map': PortSpec(clock='test'), 'feedback': PortSpec(clock='test'),
+    'velocity': PortSpec(direction='sink', clock='host:monotonic', max_ttl=.5, fallback=VelocityCommand())},
+    transport=TransportConfig('cyclonedds', 78))
 compute = Map(source.map, lambda array: array)
 async def run():
-    async with Runtime(source.map, compute.output, placement={compute: ProcessPlacement('compute', TransportConfig('cyclonedds', 78))}):
+    async with Runtime(source.map, compute.output, source.feedback, source.velocity,
+                       placement={compute: ProcessPlacement('compute', TransportConfig('cyclonedds', 78))}):
         first, second = await asyncio.gather(source.map.get(timeout=20), compute.get(timeout=20))
         assert isinstance(first.data, np.memmap) and isinstance(second.data, np.memmap)
-        a,b = os.stat(first.data.filename), os.stat(second.data.filename)
-        assert (a.st_dev,a.st_ino) == (b.st_dev,b.st_ino)
+        assert backing_identity(first.data) == backing_identity(second.data)
         assert first.metadata['revision'] == 1
         assert first.sample_id != second.sample_id  # Explicit computation is a new publication.
+        await source.velocity.set(VelocityCommand(), ttl=.2)
+        assert (await source.feedback.get(timeout=5)).data == VelocityCommand()
         assert not any(n.startswith(('rclpy','rsim.adapters.ros2')) for n in sys.modules)
         print(json.dumps({'same_inode': True, 'python': sys.version, 'no_ros': True}))
 asyncio.run(run())
 '''
     async def run():
         key = 'cross-v2:' + uuid.uuid4().hex
-        provider = SharedProvider(MappingFixture(), key=key, transport=TransportConfig(backend, 78))
+        provider = SharedProvider(MappingControlFixture(), key=key, transport=TransportConfig(backend, 78))
         (tmp_path / 'sitecustomize.py').write_text(GUARD)
         env = dict(os.environ, PYTHONPATH=os.pathsep.join((str(tmp_path), str(Path.cwd()))))
         async with Runtime(provider, _root_ports=False):

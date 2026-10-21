@@ -89,11 +89,12 @@ class MuJoCoSource(Component):
         self._access = asyncio.Lock()
         self._safe(VelocityCommand())
         self._offset = self._next_scan = self._next_camera = 0.
+        self._episode = 0
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='rsim-mujoco')
         try:
             await self._work(self._initialize)
             async with self._access:
-                packet = await self._work(self._sample, True)
+                packet = await self._work(self._sample, self.demand_snapshot(), True)
                 await self._publish(packet)
             self.task('physics', self._tick, hz=self.hz*self.speedup)
         except BaseException:
@@ -133,13 +134,7 @@ class MuJoCoSource(Component):
             self.command = VelocityCommand()
             self._command_state = (self.command, 0)
 
-    def _demanded(self, *names):
-        demand = self._runtime.demanded_ports
-        # SharedProvider adds/removes exporters after startup. Their preparation
-        # hooks represent live subscriptions beyond the static Runtime roots.
-        return any(self.outputs[name] in demand or self.outputs[name]._prepare_hooks for name in names)
-
-    def _advance(self):
+    def _advance(self, demand):
         sim = self.simulation
         with self._command_lock:
             command, deadline = self._command_state
@@ -154,9 +149,9 @@ class MuJoCoSource(Component):
         angle = (distance_right-distance_left)/self.robot.wheel_track
         yaw = self._odom[2] + angle/2
         self._odom += [distance*math.cos(yaw), distance*math.sin(yaw), angle]
-        return self._sample()
+        return self._sample(demand)
 
-    def _sample(self, force=False):
+    def _sample(self, demand, force=False):
         sim = self.simulation
         stamp = self._offset + float(sim.data.time)
         stamp_ns = round(stamp*1e9)
@@ -184,8 +179,8 @@ class MuJoCoSource(Component):
                       state=dict(backend='mujoco', motion_enabled=self.motion_enabled,
                                  simulation_time=stamp, physics_time=float(sim.data.time),
                                  contacts=int(sim.data.ncon), wheel_targets=sim.data.ctrl.copy().tolist()))
-        metadata = {'pose_kind': 'ground_truth', 'world_from_base': readonly(base)}
-        if self._demanded('scan', 'lidar_points') and (force or stamp+1e-9 >= self._next_scan):
+        metadata = {'pose_kind': 'ground_truth', 'episode': self._episode, 'world_from_base': readonly(base)}
+        if demand.has('scan', 'lidar_points') and (force or stamp+1e-9 >= self._next_scan):
             scan = sim.lidar()
             ranges = readonly(scan.ranges.astype(np.float32))
             values['scan'] = dict(header=dict(header, frame_id='lidar'), angle_min=float(scan.angles[0]),
@@ -196,7 +191,7 @@ class MuJoCoSource(Component):
             values['lidar_points'] = xyz_cloud(scan.points(), 'lidar')
             metadata['world_from_lidar'] = readonly(scan.world_from_lidar)
             self._next_scan = stamp + 1/self.lidar_hz
-        if self._demanded('image', 'depth', 'camera_info', 'points') and (force or stamp+1e-9 >= self._next_camera):
+        if demand.has('image', 'depth', 'camera_info', 'points') and (force or stamp+1e-9 >= self._next_camera):
             frame = sim.rgbd()
             values['image'] = Image(readonly(frame.rgb), 'rgb8', 'camera_optical')
             values['depth'] = Image(readonly(frame.depth), '32FC1', 'camera_optical')
@@ -204,10 +199,11 @@ class MuJoCoSource(Component):
                                         width=self.sensors.width, height=self.sensors.height,
                                         K=readonly(frame.K), depth_unit='m', depth_type='optical_z',
                                         world_from_camera_optical=readonly(frame.world_from_camera_optical))
-            if self._demanded('points'):
+            if demand.has('points'):
                 points, colors = frame.point_cloud()
                 values['points'] = xyz_cloud(points, 'camera_optical', colors)
             metadata.update(K=readonly(frame.K), depth_unit='m',
+                            depth_type='optical_z',
                             world_from_camera_optical=readonly(frame.world_from_camera_optical))
             self._next_camera = stamp + 1/self.camera_hz
         return stamp_ns, values, metadata
@@ -218,11 +214,15 @@ class MuJoCoSource(Component):
             extra = dict(metadata)
             if name == 'odom':
                 extra['pose_kind'] = 'wheel_odometry'
+                extra['velocity_frame'] = 'base_footprint'
+            if name == 'imu':
+                extra['gravity_removed'] = False
             await self.outputs[name].publish(value, stamp_ns=stamp_ns, clock=self.clock, metadata=extra)
 
     async def _tick(self):
         async with self._access:
-            await self._publish(await self._work(self._advance))
+            demand = self.demand_snapshot()
+            await self._publish(await self._work(self._advance, demand))
 
     async def inspect(self, callback, *args):
         """Simulation-only tooling, serialized on the physics/GL owner thread.
@@ -237,13 +237,15 @@ class MuJoCoSource(Component):
 
     async def reset(self, spawn=None):
         self._safe(VelocityCommand())
+        demand = self.demand_snapshot()
         def reset(sim):
+            self._episode += 1
             self._offset += float(sim.data.time) + self.robot.timestep
             sim.reset(self.spawn if spawn is None else spawn)
             self._odom[:] = 0
             self._wheels = sim.data.qpos[self._wheel_indices].copy()
             self._next_scan = self._next_camera = 0
-            return self._sample(True)
+            return self._sample(demand, True)
         async with self._access:
             await self._publish(await self._work(reset, self.simulation))
 

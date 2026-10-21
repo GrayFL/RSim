@@ -73,6 +73,7 @@ def test_invalid_rate_configuration_is_rejected(options):
 
 
 def make_io(*, adaptive=True):
+    pytest.importorskip('sensor_msgs.msg', reason='ROS message conversion integration')
     from sensor_msgs.msg import CameraInfo
     from rsim.adapters.ros2.laser_mapping import LaserMappingIO, stamp_ns
     from rsim.components.mapping import MapLedger

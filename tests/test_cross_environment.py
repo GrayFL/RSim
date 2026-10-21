@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from rsim import Image, PointCloud, Runtime, Sensor, SharedSensor, TransportConfig, allocate
+from rsim.transport.files import backing_identity
 
 
 class ModelSource(Sensor):
@@ -25,8 +26,8 @@ class ModelSource(Sensor):
             points[k] = self.counter
         await self.publish({"image": Image(image, "rgb8", "camera"),
                             "cloud": PointCloud(points, "lidar"),
-                            "image_inode": os.stat(image.filename).st_ino,
-                            "points_inode": os.stat(points.filename).st_ino},
+                            "image_inode": repr(backing_identity(image)),
+                            "points_inode": repr(backing_identity(points))},
                            stamp_ns=self.counter, clock="synthetic")
 
 
@@ -36,7 +37,7 @@ from importlib.abc import MetaPathFinder
 sys.path[:] = [p for p in sys.path if '/opt/ros/' not in p]
 class NoROS(MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in ('rclpy', 'std_msgs', 'sensor_msgs', 'ament_index_python') or fullname == 'rsim.adapters.ros2':
+        if fullname.split('.')[0] in ('rclpy', 'rospy', 'std_msgs', 'sensor_msgs', 'ament_index_python', 'mujoco') or fullname == 'rsim.adapters.ros2':
             raise AssertionError('ROS import attempted in client: ' + fullname)
 sys.meta_path.insert(0, NoROS())
 '''
@@ -46,6 +47,7 @@ import asyncio, json, os, sys
 from pathlib import Path
 import numpy as np
 from rsim import Runtime, SharedSensor, ProcessSensor, Map, TransportConfig, Image, PointCloud, HistoryMiss
+from rsim.transport.files import backing_identity
 key,ready,go,result=sys.argv[1:]
 config=TransportConfig('cyclonedds', 76)
 def source():
@@ -53,15 +55,7 @@ def source():
 def graph():
     return Map(source(), lambda data: dict(data, mean=float(data['image'].pixels.mean())))
 def mapped_inode(array):
-    # The path may already be evicted while the retained mapping stays valid.
-    if os.name == 'nt':
-        return array._rsim_file_id  # Captured with fstat on the mapped file handle.
-    address=array.ctypes.data
-    for line in Path('/proc/self/maps').read_text().splitlines():
-        fields=line.split()
-        start,end=(int(n,16) for n in fields[0].split('-'))
-        if start <= address < end: return int(fields[4])
-    raise AssertionError('array has no memory mapping')
+    return repr(backing_identity(array))
 def verify(frame):
     data=frame.data
     assert type(frame).__module__ == 'rsim.core.model'

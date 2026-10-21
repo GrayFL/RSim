@@ -19,6 +19,10 @@ def odom_message(pose, *, position_std=.005, yaw_std=.01):
 
 def imu_message(rate, *, frame="body", std=.01):
     return {"header": {"frame_id": frame},
+            "orientation": dict(x=0., y=0., z=0., w=0.),
+            "orientation_covariance": [-1.] + [0.] * 8,
+            "linear_acceleration": dict(x=0., y=0., z=0.),
+            "linear_acceleration_covariance": [-1.] + [0.] * 8,
             "angular_velocity": {"x": 0., "y": 0., "z": float(rate)},
             "angular_velocity_covariance": (np.eye(3) * std**2).ravel().tolist()}
 
@@ -34,16 +38,19 @@ class SimulatedChassis(Component):
         self.imu = self.signal("imu", history=256, clock="simulation")
         self.odom = self.signal("odom", history=256, clock="simulation")
         self.truth = self.signal("truth", history=1024, clock="simulation")
+        self.feedback = self.signal('feedback', history=32, clock='simulation')
         self.velocity = CommandSink(self, "velocity", self._apply, fallback=VelocityCommand(), hz=200)
         self.hz, self.speedup, self.noise, self.gyro_bias = hz, speedup, noise, gyro_bias
         self.commands = []
 
     async def _apply(self, envelope):
         self.command = envelope.value
+        self._deadline_ns = envelope.deadline_ns
         self.commands.append((time.monotonic(), envelope.value))
 
     async def open(self):
         self.command = VelocityCommand()
+        self._deadline_ns = 0
         self.state = np.zeros(3)
         self.clock_ns = 0
         self.rng = np.random.default_rng(12)
@@ -51,6 +58,8 @@ class SimulatedChassis(Component):
         self.task("simulate", self._step, hz=self.hz)
 
     async def _step(self):
+        if time.monotonic_ns() >= self._deadline_ns:
+            self.command = VelocityCommand()
         now = time.monotonic()
         dt = min(now - self._last, .1) * self.speedup
         self._last = now
@@ -68,6 +77,8 @@ class SimulatedChassis(Component):
         if self.noise:
             gyro += self.rng.normal(0, .003)
         meta = dict(stamp_ns=self.clock_ns, clock="simulation")
-        await self.imu.publish(imu_message(gyro), **meta)
-        await self.odom.publish(odom_message(measured), **meta)
-        await self.truth.publish(truth, **meta)
+        await self.imu.publish(imu_message(gyro), metadata={'gravity_removed': False}, **meta)
+        await self.odom.publish(odom_message(measured), metadata={'pose_kind': 'wheel_odometry'}, **meta)
+        await self.truth.publish(truth, metadata={'pose_kind': 'ground_truth'}, **meta)
+        await self.feedback.publish(dict(backend='memory', linear_x=self.command.linear_x,
+                                         angular_z=self.command.angular_z), **meta)

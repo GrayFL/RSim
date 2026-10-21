@@ -1,45 +1,34 @@
-"""Local shared-file primitives, including Windows delete-sharing mappings."""
+"""NPY layout and NumPy mappings; all OS operations belong to platforms."""
 import os
 from pathlib import Path
-import shutil
-import tempfile
 import ast
 import struct
-
 import numpy as np
+
+from rsim.platforms import get_platform
+from rsim.platforms.files import open_shared, unlink, remove_tree, hardlink
+from rsim.platforms.paths import roots
 
 
 def storage_root():
-    return Path(tempfile.gettempdir()) if os.name == 'nt' else Path('/dev/shm')
+    return roots()['storage_root']
 
 
-def open_shared(path, *, write=False, create=False, delete=False):
-    """Open with FILE_SHARE_DELETE so retained mappings can survive unlink."""
-    if os.name != 'nt':
-        return open(path, 'w+b' if create else ('r+b' if write else 'rb'))
-    import ctypes
-    from ctypes import wintypes as w
-    import msvcrt
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    create_file = kernel.CreateFileW
-    create_file.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, w.LPVOID, w.DWORD, w.DWORD, w.HANDLE]
-    create_file.restype = w.HANDLE
-    access = 0x80000000 | (0x40000000 if write else 0) | (0x10000 if delete else 0)
-    handle = create_file(str(Path(path).resolve()), access, 7, None, 2 if create else 3, 0x80, None)
-    if handle == w.HANDLE(-1).value:
-        error = ctypes.get_last_error()
-        if error in (2, 3):
-            raise FileNotFoundError(str(path))
-        raise ctypes.WinError(error)
-    fd = msvcrt.open_osfhandle(handle, os.O_BINARY | (os.O_RDWR if write else os.O_RDONLY))
-    return os.fdopen(fd, 'r+b' if write else 'rb')
+def backing_identity(array):
+    """Opaque local backing identity, including after its path was unlinked."""
+    current = array
+    while current is not None:
+        identity = getattr(current, '_rsim_backing_identity', None)
+        if identity is not None:
+            return identity
+        if isinstance(current, np.memmap) and current.filename:
+            with open_shared(current.filename) as file:
+                return get_platform().files.identity(file)
+        current = getattr(current, 'base', None)
+    raise ValueError('array has no shared backing')
 
 
 def open_array(path, *, shape=None, dtype=None):
-    if os.name != 'nt':
-        if shape is not None:
-            return np.lib.format.open_memmap(path, mode='w+', shape=shape, dtype=dtype)
-        return np.load(path, mmap_mode='r', allow_pickle=False)
     creating = shape is not None
     with open_shared(path, write=creating, create=creating) as file:
         if creating:
@@ -87,48 +76,5 @@ def open_array(path, *, shape=None, dtype=None):
         # np.memmap receives a descriptor-backed file rather than a path.
         result.filename = str(Path(path).resolve())
         result._rsim_file_id = os.fstat(file.fileno()).st_ino
+        result._rsim_backing_identity = get_platform().files.identity(file)
         return result
-
-
-def unlink(path, *, missing_ok=True):
-    if os.name != 'nt' or Path(path).is_symlink():
-        return Path(path).unlink(missing_ok=missing_ok)
-    import ctypes
-    from ctypes import wintypes as w
-    import msvcrt
-    try:
-        with open_shared(path, delete=True) as file:
-            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-            function = kernel.SetFileInformationByHandle
-            function.argtypes = [w.HANDLE, ctypes.c_int, w.LPVOID, w.DWORD]
-            function.restype = w.BOOL
-            flags = w.DWORD(0x1 | 0x2 | 0x10)  # DELETE | POSIX_SEMANTICS | IGNORE_READONLY
-            if not function(msvcrt.get_osfhandle(file.fileno()), 21, ctypes.byref(flags), ctypes.sizeof(flags)):
-                raise ctypes.WinError(ctypes.get_last_error())
-    except FileNotFoundError:
-        if not missing_ok:
-            raise
-
-
-def remove_tree(directory, *, ignore_errors=False):
-    if os.name != 'nt':
-        return shutil.rmtree(directory, ignore_errors=ignore_errors)
-    directory = Path(directory)
-    if not directory.exists():
-        return
-    if directory.is_junction():
-        directory.rmdir()
-        return
-    if directory.is_symlink():
-        directory.unlink()
-        return
-    try:
-        for path in directory.iterdir():
-            if path.is_dir() and not path.is_symlink():
-                remove_tree(path, ignore_errors=ignore_errors)
-            else:
-                unlink(path)
-        directory.rmdir()
-    except OSError:
-        if not ignore_errors:
-            raise

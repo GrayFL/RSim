@@ -1,106 +1,165 @@
-"""Source ownership lasts until the final client socket disconnects."""
-import fcntl
+"""Shared source leases and registry proxy; independent of the worker event loop."""
+import asyncio
 import json
-import os
 from pathlib import Path
-import selectors
-import shutil
-import signal
-import socket
-import subprocess
 import sys
 
+from rsim.transport.files import remove_tree
+from .options import RuntimeOptions
+from .supervision import Lifecycle, State, read_status, stop_worker
+from dataclasses import asdict
+from rsim.platforms import get_platform
 
-def main():
-    directory = Path(sys.argv[1])
-    listener = socket.socket(fileno=int(sys.argv[2]))
-    initial = socket.socket(fileno=int(sys.argv[3]))
-    socket_path, lock_path = Path(sys.argv[4]), Path(sys.argv[5])
-    listener.setblocking(False)
-    initial.sendall(b"1")
-    clients = {initial}
-    stopping = False
-    lock = lock_path.open("a+")
+
+async def run(directory, path, lock_path, mode):
+    platform = get_platform()
+    config = json.loads((directory / 'config.json').read_text(encoding='utf-8'))
+    options = RuntimeOptions.from_dict(config.get('options'))
+    lifecycle = Lifecycle('shared')
+    lifecycle.transition(State.STARTING)
+    report = Path(config['log_path']).with_suffix('.report.json')
+    def save():
+        temporary = report.with_suffix('.tmp')
+        temporary.write_text(json.dumps(asdict(lifecycle)), encoding='utf-8')
+        temporary.replace(report)
+    save()
+    stopped = asyncio.Event()
+    platform.process.install_shutdown(stopped, directory)
+    ready = asyncio.Event()
+    clients = set()
+    tasks = set()
+    connected = asyncio.Event()
     worker = None
+    cleanup_lock = None
 
-    def stop(*_):
-        nonlocal stopping
-        stopping = True
+    async def copy(reader, writer):
+        writer.transport.set_write_buffer_limits(high=65536)
+        while packet := await reader.read(65536):
+            writer.write(packet)
+            await writer.drain()
 
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
-    try:
-        worker = subprocess.Popen([
-            sys.executable, "-m", "rsim.runtime.exec", str(os.getpid()),
-            sys.executable, "-m", "rsim.runtime.worker", str(directory),
-        ], start_new_session=True)
-        with selectors.DefaultSelector() as selector:
-            selector.register(listener, selectors.EVENT_READ)
-            selector.register(initial, selectors.EVENT_READ)
-            while not stopping:
-                if worker.poll() is not None:
-                    shutil.rmtree(directory / "frames", ignore_errors=True)
-                    status = directory / "status.json"
-                    state = json.loads(status.read_text()) if status.exists() else {}
-                    if "error" not in state:
-                        temporary = directory / "supervisor-status.tmp"
-                        temporary.write_text(json.dumps({"pid": worker.pid,
-                            "error": f"worker exited: {worker.returncode}"}))
-                        temporary.replace(status)
-                for selected, _ in selector.select(timeout=0.1):
-                    connection = selected.fileobj
-                    if connection is listener:
-                        while True:
-                            try:
-                                client, _ = listener.accept()
-                            except BlockingIOError:
-                                break
-                            try:
-                                client.sendall(b"1")
-                            except (BrokenPipeError, ConnectionResetError):
-                                client.close()
-                                continue
-                            clients.add(client)
-                            selector.register(client, selectors.EVENT_READ)
-                    else:
+    async def accept(reader, writer):
+        tasks.add(asyncio.current_task())
+        clients.add(writer)
+        connected.set()
+        upstream = None
+        forwarding = []
+        try:
+            if mode == 'sensor':
+                await ready.wait()
+                writer.write(b'1')
+                await writer.drain()
+                while await reader.read(1024):
+                    pass
+            else:
+                async with asyncio.timeout(options.startup_timeout_s):
+                    while True:
                         try:
-                            disconnected = not connection.recv(1)
-                        except ConnectionResetError:
-                            disconnected = True
-                        if disconnected:
-                            selector.unregister(connection)
-                            clients.remove(connection)
-                            connection.close()
-                if not clients:
-                    # Serialize last-reader shutdown with a new client attaching.
-                    # Nonblocking is crucial: an attaching client holds the same
-                    # lock while waiting for our connection acknowledgement.
-                    try:
-                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        continue
-                    listener.close()
+                            back_reader, upstream = await platform.ipc.open_connection(directory / 'registry.sock')
+                            break
+                        except (OSError, asyncio.IncompleteReadError):
+                            if worker is not None and worker.poll() is not None:
+                                return
+                            await asyncio.sleep(.02)
+                forwarding = [asyncio.create_task(copy(reader, upstream)), asyncio.create_task(copy(back_reader, writer))]
+                await asyncio.wait(forwarding, return_when=asyncio.FIRST_COMPLETED)
+        except (OSError, TimeoutError):
+            pass
+        finally:
+            clients.discard(writer)
+            tasks.discard(asyncio.current_task())
+            for task in forwarding:
+                task.cancel()
+            await asyncio.gather(*forwarding, return_exceptions=True)
+            if upstream is not None:
+                upstream.close()
+                try:
+                    await upstream.wait_closed()
+                except OSError:
+                    pass
+            writer.close()
+
+    owner_lock = platform.locks.open_lock(path.with_suffix('.owner.lock'))
+    platform.locks.try_lock(owner_lock)
+    server = await platform.ipc.start_server(accept, path=path)
+    endpoint_identity = platform.ipc.endpoint_identity(path)
+    try:
+        await asyncio.wait_for(connected.wait(), options.startup_timeout_s)
+        module = 'rsim.runtime.worker' if mode == 'sensor' else 'rsim.runtime.shared_provider_worker'
+        worker = platform.process.spawn_worker(module, directory, *(() if mode == 'sensor' else (directory / 'registry.sock',)))
+        failed = False
+        loop = asyncio.get_running_loop()
+        startup_deadline = loop.time() + options.startup_timeout_s
+        while not stopped.is_set() and not (directory / 'supervisor.stop').exists():
+            if not ready.is_set():
+                if read_status(directory).get('ready'):
+                    ready.set()
+                    lifecycle.transition(State.RUNNING)
+                    save()
+                elif loop.time() >= startup_deadline:
+                    raise TimeoutError('provider initialization timed out')
+            if worker.poll() is not None and not failed:
+                if mode == 'sensor':
+                    status = directory / 'status.json'
+                    state = read_status(directory)
+                    if 'error' not in state:
+                        temporary = directory / 'supervisor-status.tmp'
+                        temporary.write_text(json.dumps(dict(pid=worker.pid, error=f'worker exited: {worker.returncode}')), encoding='utf-8')
+                        temporary.replace(status)
+                failed = True
+                lifecycle.transition(State.FAILED, RuntimeError(f'worker exited: {worker.returncode}'))
+                save()
+                break
+            if not clients:
+                candidate = platform.locks.open_lock(lock_path)
+                try:
+                    platform.locks.try_lock(candidate)
+                except BlockingIOError:
+                    candidate.close()
+                else:
+                    cleanup_lock = candidate
+                    # No await between observing empty, owning the startup lock,
+                    # and refusing new clients; launch/last-close are serialized.
+                    server.close()
                     break
+            await asyncio.sleep(.05)
+    except BaseException as error:
+        lifecycle.transition(State.FAILED, error)
+        save()
+        raise
     finally:
-        # Also serialize externally requested shutdown against new attachments.
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        listener.close()
-        for client in clients:
+        lifecycle.transition(State.STOPPING)
+        save()
+        server.close()
+        await server.wait_closed()
+        # Release containment before making failed connections look reconnectable.
+        try:
+            await asyncio.to_thread(stop_worker, worker, directory, options.shutdown)
+        except Exception as error:
+            lifecycle.cleanup.append(dict(operation='stop-worker', error=f'{type(error).__name__}: {error}'))
+        for client in tuple(clients):
             client.close()
-        if worker is not None and worker.poll() is None:
+        for task in tuple(tasks):
+            task.cancel()
+        await asyncio.gather(*tuple(tasks), return_exceptions=True)
+        try:
+            lifecycle.cleanup.extend(remove_tree(directory, ignore_errors=True,
+                                                 instance_id=config.get('manifest', {}).get('instance_id')))
             try:
-                os.killpg(worker.pid, signal.SIGTERM)
-            except ProcessLookupError:
+                if platform.ipc.endpoint_identity(path) == endpoint_identity:
+                    path.unlink()
+            except FileNotFoundError:
                 pass
-            try:
-                worker.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(worker.pid, signal.SIGKILL)
-                worker.wait()
-        shutil.rmtree(directory, ignore_errors=True)
-        socket_path.unlink(missing_ok=True)
-        lock.close()
+            lifecycle.transition(State.FAILED if lifecycle.failure or lifecycle.cleanup else State.CLOSED)
+        except BaseException as error:
+            lifecycle.transition(State.FAILED, error)
+            raise
+        finally:
+            save()
+            if cleanup_lock is not None:
+                cleanup_lock.close()
+            owner_lock.close()
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    asyncio.run(run(*(Path(value) for value in sys.argv[1:4]), sys.argv[4]))

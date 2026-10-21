@@ -62,6 +62,8 @@ class Analysis(Component):
 
 完整语义、迁移与限制见 [架构文档](docs/architecture.md)。源码职责、依赖方向、新增设备与内部导入迁移见 [包结构与扩展](docs/modules.md)。
 
+跨平台参数、独立需求、监督和持久日志见 [运行时](docs/runtime.md)；IMU、里程计、图像和控制时钟规则见 [数据契约](docs/data-contracts.md)。可运行 `python -m rsim.apps.doctor --require process,shared-mapping,dds --deep --json` 检查部署能力，开发验证见 [本地测试](docs/validation.md)。
+
 ## 硬件入口
 
 驱动环境的 `rsim.drivers` 启动共享硬件源；应用侧 `rsim` 中的同名工厂只连接已有源。设备配置由调用方提供。
@@ -82,7 +84,7 @@ async with Runtime(snapshot.output):
 
 驱动参数没有白名单：`D435(parameters={"publish_tf": False}, ros_args=["--log-level", "warn"])`；CLI 对应 `python -m rsim.drivers d435 --ros-args -p publish_tf:=false --log-level warn`。参数文件、remap、覆盖优先级见 [驱动参数说明](docs/drivers.md)。
 
-`Chassis` 将 ROS1 设备映射为 `imu / odom / scan / state` Signals 和 `velocity` CommandSink。远端兼容 Python 2.7，主机无需 ROS1；SSH 网络段传输消息内容。部署和零速测试见 [ROS1 文档](docs/ros1.md)。
+根入口 `rsim.Chassis` 仍是 ROS1 兼容适配器，将设备映射为 `imu / odom / scan / state` Signals 和 `velocity` CommandSink；新代码建议 `from rsim.adapters.ros1 import Chassis as Ros1Chassis`。控制服务客户端使用 `from rsim.devices import Chassis`。远端兼容 Python 2.7，主机无需 ROS1；SSH 网络段传输消息内容。部署和零速测试见 [ROS1 文档](docs/ros1.md)。
 
 HiPNUC IMU 支持 Python 串口直读与 ROS2 节点两种模式，均通过 `.imu.get()` 返回数据，见 [IMU 接入](docs/imu.md)。`load_rig()` 可读取 YAML 初始化设备、复用嵌套组合中的同一个传感器，并用 graphmap Pose 表示安装外参，见 [配置与组装](docs/configuration.md)。
 

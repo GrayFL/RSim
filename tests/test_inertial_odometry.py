@@ -93,6 +93,7 @@ def test_covariance_rejects_negative_or_nonfinite_measurements():
 
 
 def test_native_filter_prediction_does_not_refresh_stale_sources(tmp_path):
+    pytest.importorskip('nav_msgs.msg', reason='ROS odometry conversion integration')
     async def run():
         c = estimator(tmp_path)
         now = time.time_ns()

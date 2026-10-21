@@ -11,11 +11,11 @@ from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
-from .platform import user_id, spawn_leased
-from rsim.transport.files import storage_root, remove_tree, open_shared
-import shutil
+from rsim.platforms.process import spawn_leased
+from .paths import instance_directory, worker_log
+from .supervision import wait_ready, read_status, check_cleanup_report
+from rsim.transport.files import remove_tree, open_shared
 import sys
-import tempfile
 import uuid
 
 import cloudpickle
@@ -75,20 +75,26 @@ class _ProcessHost(Component):
         self.process = self._lease = self._log = self.worker_pid = None
 
     async def open(self):
-        self._log = open_shared(self.directory / 'worker.log', write=True, create=True)
+        self.options = self._runtime.options
+        self.log_path = worker_log(self.directory, self.options)
+        config_path = self.directory / 'config.json'
+        config = json.loads(config_path.read_text(encoding='utf-8'))
+        config['log_path'] = str(self.log_path)
+        config_path.write_text(json.dumps(config), encoding='utf-8')
+        self._log = open_shared(self.log_path, write=True, create=True)
         self.process, self._lease = await spawn_leased('rsim.runtime.supervisor', self.directory,
                                                        stdout=self._log, stderr=self._log)
+        self.worker_pid = (await wait_ready(self.process, self.directory, self.options.startup_timeout_s))['pid']
         self.task("supervise", self.check, hz=50)
 
     async def check(self):
-        status = self.directory / "status.json"
-        if status.exists():
-            state = json.loads(status.read_text())
+        state = read_status(self.directory)
+        if state:
             self.worker_pid = state.get("pid")
             if "error" in state:
                 raise ComponentError(state["error"])
         if self.process.returncode is not None:
-            log = self.directory / "worker.log"
+            log = self.log_path
             detail = log.read_text()[-8000:] if log.exists() else ""
             raise ComponentError(f"placement supervisor exited: {self.process.returncode}\n{detail}")
 
@@ -99,14 +105,15 @@ class _ProcessHost(Component):
         try:
             if self.process is not None:
                 try:
-                    await asyncio.wait_for(self.process.wait(), 10)
+                    await asyncio.wait_for(self.process.wait(), self.options.shutdown.grace_s + self.options.shutdown.kill_wait_s + 2)
                 except TimeoutError:
                     self.process.terminate()
-                    await asyncio.wait_for(self.process.wait(), 7)
+                    await asyncio.wait_for(self.process.wait(), self.options.shutdown.kill_wait_s)
         finally:
             if self._log is not None:
                 self._log.close()
-            remove_tree(self.directory, ignore_errors=True)
+            remove_tree(self.directory)
+        check_cleanup_report(getattr(self, 'log_path', None))
 
 
 class _DirectoryLease(Component):
@@ -116,6 +123,8 @@ class _DirectoryLease(Component):
         self.process = self.lease = None
 
     async def open(self):
+        self.options = self._runtime.options
+        (self.directory / 'guard.json').write_text(json.dumps(self.options.to_dict()), encoding='utf-8')
         self.process, self.lease = await spawn_leased('rsim.runtime.store_guard', self.directory)
         self.task("store-guard", self.check, hz=20)
 
@@ -128,7 +137,7 @@ class _DirectoryLease(Component):
             os.close(self.lease)
             self.lease = None
         if self.process is not None:
-            await asyncio.wait_for(self.process.wait(), 9)
+            await asyncio.wait_for(self.process.wait(), self.options.shutdown.grace_s + self.options.shutdown.kill_wait_s + 3)
 
 
 class BindingPlan:
@@ -194,7 +203,10 @@ class BindingPlan:
         if not specs:
             return
         # Command bindings are installed separately from sample channels.
-        self.directory = Path(tempfile.mkdtemp(prefix=f"rsim-deploy-{user_id()}-", dir=storage_root()))
+        if any(spec.transport.backend == 'inprocess' for spec in specs.values()):
+            raise ValueError('ProcessPlacement requires a real cross-process DDS backend')
+        self.directory = instance_directory('rsim-deploy-', self.runtime.options)
+        (self.directory / 'config.json').write_text(json.dumps({'options': self.runtime.options.to_dict()}), encoding='utf-8')
         directories = {name: self.directory / ("p" + str(i)) for i, name in enumerate(specs)}
         local_directory = self.directory / "local"
         for directory in (*directories.values(), local_directory):
@@ -261,6 +273,7 @@ class BindingPlan:
             (directory / "graph.pkl").write_bytes(recipe)
             (directory / "config.json").write_text(json.dumps({
                 "worker_module": "rsim.runtime.placement_worker", "group": name,
+                "options": self.runtime.options.to_dict(),
                 "transport": asdict(spec.transport),
                 "sys_path": [str(Path(path).resolve()) for path in sys.path]}))
             self.hosts[name] = _ProcessHost(directory)

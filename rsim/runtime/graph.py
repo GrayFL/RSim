@@ -2,8 +2,11 @@
 import asyncio
 import uuid
 from rsim.core.component import Component, Reference
-from rsim.core.errors import ComponentError
-from rsim.core.signal import Signal
+from rsim.core.errors import ComponentError, CleanupFailed, PlatformUnavailable, StartupFailed
+from rsim.platforms.errors import CapabilityUnavailable
+from .options import RuntimeOptions
+from .supervision import Lifecycle, State
+from .demand import DemandTracker
 
 class Runtime:
     """Own Components required by requested Components, Signals or sinks.
@@ -11,7 +14,13 @@ class Runtime:
     Ownership DAGs determine lifetime order. Signal producers are discovered
     independently, so data feedback does not create an ownership cycle.
     """
-    def __init__(self, *roots, placement=None, _root_ports=True):
+    def __init__(self, *roots, placement=None, options=None, _root_ports=True):
+        self.options = options or RuntimeOptions()
+        self.lifecycle = Lifecycle('runtime')
+        self.demand = DemandTracker()
+        self._cleanup_task = None
+        self._close_pending = {}
+        self.accepting = False
         self.roots = self._original_roots = roots
         self.placement = placement or {}
         self._order, self._started, self._aliases = [], [], []
@@ -144,22 +153,39 @@ class Runtime:
                 demand(port, component)
 
     async def __aenter__(self):
-        if self._active:
+        if self._active or self._started:
             raise ComponentError("runtime already active")
+        self._cleanup_task = None
+        self.lifecycle.failure = None
+        self.lifecycle.transition(State.STARTING)
         try:
+            self.options = self.options.resolved()
+            deadline = asyncio.get_running_loop().time() + self.options.startup_timeout_s
             self._resolve()
             if self.placement or any(item.placement is not None for item in self._order):
                 from .deployment import BindingPlan
                 self._binding_plan = BindingPlan(self)
                 self._binding_plan.prepare()
                 self._resolve()
-        except BaseException:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError('graph preparation exceeded startup budget')
+        except BaseException as error:
             if self._binding_plan is not None:
                 self._binding_plan.release()
                 self._binding_plan = None
             self._release_bindings()
+            self.lifecycle.transition(State.FAILED, error)
+            if isinstance(error, CapabilityUnavailable):
+                raise PlatformUnavailable(str(error), phase=error.operation) from error
+            if isinstance(error, TimeoutError):
+                raise StartupFailed('runtime startup timed out', phase='preparing') from error
             raise
         self._active = True
+        self.accepting = True
+        self.demand.clear()
+        for port, consumers in self.demanded_ports.items():
+            for consumer in consumers:
+                self.demand.acquire(port, ('static', consumer))
         try:
             # All outputs become readable before open callbacks run, so seeded
             # feedback and consumers waiting on later producers are possible.
@@ -173,19 +199,30 @@ class Runtime:
                 component._failed.clear()
                 for output in component.outputs.values():
                     output._history.clear()
+                    output.history_evictions = 0
                     output._publication_sequence = 0
                     output._port_error = None
             for component in self._order:
                 self._started.append(component)
-                await component.open()
-                for sink in component.sinks.values():
-                    await sink._activate()
+                async with asyncio.timeout_at(deadline):
+                    await component.open()
+                    for sink in component.sinks.values():
+                        await sink._activate()
                 component._ready.set()
                 component._tasks.add(asyncio.create_task(
                     component._watchdog(), name=f"{type(component).__name__}:WatchDog"))
-        except BaseException:
-            await self.aclose()
+        except BaseException as error:
+            self.lifecycle.transition(State.FAILED, error)
+            try:
+                await self.aclose()
+            except Exception as cleanup:
+                error.add_note(f'cleanup also failed: {cleanup}')
+            if isinstance(error, CapabilityUnavailable):
+                raise PlatformUnavailable(str(error), phase=error.operation) from error
+            if isinstance(error, TimeoutError):
+                raise StartupFailed('runtime startup timed out', phase='initializing') from error
             raise
+        self.lifecycle.transition(State.RUNNING)
         return self
 
     async def wait(self):
@@ -196,54 +233,114 @@ class Runtime:
             raise ComponentError("runtime has no components")
         try:
             done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            await next(iter(done))
+            try:
+                await next(iter(done))
+            except Exception as error:
+                self.lifecycle.transition(State.FAILED, error)
+                raise
         finally:
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
 
+    def diagnostics(self):
+        from .diagnostics import runtime_report
+        return runtime_report(self)
+
     async def aclose(self):
+        if self._cleanup_task is None or (self._cleanup_task.done() and self._started):
+            self._cleanup_task = asyncio.create_task(self._close(), name='rsim-runtime-close')
+        try:
+            await asyncio.shield(self._cleanup_task)
+        except asyncio.CancelledError:
+            # Resource cleanup completes independently; never swallow cancellation.
+            try:
+                await self._cleanup_task
+            except Exception as error:
+                self.lifecycle.cleanup.append(dict(error=str(error), operation='cancelled-close'))
+            raise
+
+    async def _close(self):
+        if not self._started and not self._active:
+            if self.lifecycle.state == State.NEW:
+                self.lifecycle.transition(State.CLOSED)
+            return
+        self.lifecycle.transition(State.STOPPING)
         errors = []
+        unfinished = []
+        # Public writes stop immediately; owners can still send their fallback
+        # through dependencies until those dependencies reach teardown.
+        self.accepting = False
         for component in reversed(self._started):
             component._closing = True
             component._ready.set()
             component._failed.set()
-            for task in component._tasks:
-                task.cancel()
-            await asyncio.gather(*component._tasks, return_exceptions=True)
-            component._tasks.clear()
-            component._fail_requests()
-            component._services.clear()
             for sink in component.sinks.values():
                 try:
-                    await sink._deactivate()
+                    async with asyncio.timeout(self.options.shutdown.grace_s):
+                        await sink._deactivate()
                 except Exception as error:
                     errors.append(error)
+            for task in component._tasks:
+                task.cancel()
+            if component._tasks:
+                done, pending = await asyncio.wait(component._tasks, timeout=self.options.shutdown.grace_s)
+                await asyncio.gather(*done, return_exceptions=True)
+                component._tasks = pending
+            component._fail_requests()
+            component._services.clear()
+            closed = False
             try:
-                await component.close()
+                task = self._close_pending.get(component)
+                if task is None:
+                    task = asyncio.create_task(component.close(), name=f'{type(component).__name__}:close')
+                    self._close_pending[component] = task
+                budget = self.options.shutdown.grace_s + self.options.shutdown.kill_wait_s + 3
+                done, _ = await asyncio.wait((task,), timeout=budget)
+                if not done or component._tasks:
+                    unfinished.append(component)
+                    raise CleanupFailed(f'{type(component).__name__} still has running resources; '
+                                        'use ProcessPlacement for forcible native cleanup', phase='close',
+                                        instance_id=component._instance_id)
+                await task
+                closed = True
+                self._close_pending.pop(component, None)
             except Exception as error:
                 errors.append(error)
+                if component not in unfinished:
+                    unfinished.append(component)
+                if task.done():
+                    self._close_pending.pop(component, None)
             finally:
-                component._closed = True
-                component._runtime = None
+                if closed or component not in unfinished:
+                    component._closed = True
+                    component._runtime = None
                 for output in component.outputs.values():
                     await output._notify()
                     output._history.clear()
         # An open callback may fail before later components are started.
         for component in self._order:
+            if component in unfinished:
+                continue
             component._closed = True
             component._runtime = None
             component._failed.set()
             for output in component.outputs.values():
                 await output._notify()
-        self._started.clear()
+        self._started = list(reversed(unfinished))
+        self.demand.clear()
         self._active = False
-        if self._binding_plan is not None:
+        if self._binding_plan is not None and not unfinished:
             self._binding_plan.release()
             self._binding_plan = None
-        self._release_bindings()
+        if not unfinished:
+            self._release_bindings()
         if errors:
+            self.lifecycle.cleanup.extend(dict(operation='close', error=f'{type(error).__name__}: {error}')
+                                          for error in errors)
+            self.lifecycle.transition(State.FAILED, errors[0])
             raise ExceptionGroup("component cleanup failed", errors)
+        self.lifecycle.transition(State.FAILED if self.lifecycle.failure else State.CLOSED)
 
     async def __aexit__(self, exc_type, exc, tb):
         cleanup = asyncio.create_task(self.aclose())
@@ -251,4 +348,11 @@ class Runtime:
             await asyncio.shield(cleanup)
         except asyncio.CancelledError:
             await cleanup
+            raise
+        except Exception as error:
+            if isinstance(exc, asyncio.CancelledError):
+                exc.add_note(f'Runtime cleanup also failed: {error}')
+                raise exc.with_traceback(tb)
+            if exc is not None:
+                raise BaseExceptionGroup('Runtime body and cleanup failed', [exc, error]) from None
             raise

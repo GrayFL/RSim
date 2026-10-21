@@ -3,14 +3,14 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from .platform import install_shutdown
-import signal
+from rsim.platforms import get_platform
 import sys
 import traceback
 
 import cloudpickle
 
 from .graph import Runtime
+from .options import RuntimeOptions
 from rsim.core.component import Component
 from rsim.core.signal import as_signal
 from rsim.transport.descriptor import DescriptorTransport, TransportConfig
@@ -52,7 +52,7 @@ class Export(Component):
 
 async def run(directory):
     stopped = asyncio.Event()
-    install_shutdown(stopped, directory)
+    get_platform().process.install_shutdown(stopped, directory)
     config = json.loads((directory / "config.json").read_text())
     # Descendant factories and ROS ingress inherit the same domain/backend.
     os.environ["ROS_DOMAIN_ID"] = str(config["transport"]["domain_id"])
@@ -63,7 +63,7 @@ async def run(directory):
     as_signal(source)
     exported = Export(source, directory, config)
     current_store.set(exported.store)
-    async with Runtime(exported):
+    async with Runtime(exported, options=RuntimeOptions.from_dict(config.get('options'))):
         write_status(directory, {"pid": os.getpid(), "ready": True})
         while not stopped.is_set():
             if exported._failure is not None:

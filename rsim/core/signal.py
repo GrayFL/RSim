@@ -26,6 +26,7 @@ class Signal(Generic[T]):
         self._history = deque(maxlen=history)
         self._condition = asyncio.Condition()
         self._sequence = 0
+        self.history_evictions = 0
         self._target = None
         # Installed by channel bindings at a placement boundary, never selected
         # by Signal itself. Unbound local publication preserves payload identity.
@@ -109,6 +110,8 @@ class Signal(Generic[T]):
         frame = Frame(data, stamp_ns, clock, time.time_ns() if received_ns is None else received_ns,
                       self._sequence, sample_id, dict(metadata or {}))
         async with self._condition:
+            if len(self._history) == self._history.maxlen:
+                self.history_evictions += 1
             self._history.append(frame)
             self._condition.notify_all()
         return frame

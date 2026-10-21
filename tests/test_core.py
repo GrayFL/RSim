@@ -152,14 +152,23 @@ def test_cancellation_cleans_resources_and_wakes_waiters():
     asyncio.run(run())
 
 
-def test_metronome_skips_overruns():
+def test_metronome_skips_overruns(monkeypatch):
     async def run():
-        clock = Metronome(100)
-        await clock.tick()
-        await asyncio.sleep(0.04)
-        await clock.tick()
-        assert clock.missed >= 3
-        assert clock.deadline >= asyncio.get_running_loop().time() - 0.01
+        # Assert scheduling policy deterministically: Windows sleep granularity
+        # and host load are not promises about how promptly a task wakes.
+        from types import SimpleNamespace
+        now = [100.]
+        async def sleep(delay):
+            now[0] += delay
+        with monkeypatch.context() as patch:
+            patch.setattr(asyncio, 'get_running_loop', lambda: SimpleNamespace(time=lambda: now[0]))
+            patch.setattr(asyncio, 'sleep', sleep)
+            clock = Metronome(100)
+            await clock.tick()
+            now[0] += .04
+            await clock.tick()
+            assert clock.missed >= 3
+            assert clock.deadline == now[0]
     asyncio.run(run())
     for hz in (0, -1, float("nan"), float("inf")):
         with pytest.raises(ValueError):

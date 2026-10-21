@@ -11,7 +11,7 @@ from rsim.core.component import Component, PrimaryComponent
 from rsim.core.model import SampleId
 from rsim.core.commands import CommandSink
 from rsim.transport.shared import SharedStore, decode
-from rsim.transport.commands import CommandChannel, CommandClient, CommandServer
+from rsim.transport.commands import CommandChannel, CommandServer
 
 
 def sample_id(descriptor):
@@ -102,11 +102,18 @@ class PortImporter(PrimaryComponent):
         self.pending = deque(maxlen=32)
         self.previous = 0
         self.subscription = None
+        self.queue_drops = self.evicted_descriptors = 0
+
+    def _enqueue(self, descriptor):
+        if len(self.pending) == self.pending.maxlen:
+            self.queue_drops += 1
+        self.pending.append(descriptor)
 
     async def open(self):
         self.pending.clear()
         self.previous = 0
-        self.subscription = self.dependencies[0].subscribe(self.channel.topic, self.pending.append)
+        self.queue_drops = self.evicted_descriptors = 0
+        self.subscription = self.dependencies[0].subscribe(self.channel.topic, self._enqueue)
         self.task("import", self.receive, hz=500)
 
     async def receive(self):
@@ -118,6 +125,7 @@ class PortImporter(PrimaryComponent):
                 data = decode(descriptor["data"], self.channel.directory)
                 metadata = decode(descriptor["metadata"], self.channel.directory) if "metadata" in descriptor else {}
             except FileNotFoundError:
+                self.evicted_descriptors += 1
                 continue  # Bounded history already evicted this generation.
             self.previous = descriptor["sequence"]
             await self.output.publish(data, stamp_ns=descriptor["stamp_ns"], clock=descriptor["clock"],
@@ -198,6 +206,7 @@ class PortBinding:
             record['upstream'] = identifier if upstream is not None else None
             self.records[port] = record
         record["tokens"].add(token)
+        self.runtime.demand.acquire(port, ('subscription', token))
         endpoint = record["endpoint"]
         if isinstance(endpoint, CommandServer):
             endpoint.tokens.add(token)
@@ -210,6 +219,7 @@ class PortBinding:
             return
         endpoint = record["endpoint"]
         record["tokens"].discard(token)
+        self.runtime.demand.release(port, ('subscription', token))
         if isinstance(endpoint, CommandServer):
             await endpoint.release_token(token)
         if not record["tokens"]:
@@ -228,9 +238,16 @@ class PortBinding:
                 for port, record in self.records.items()
                 if record["endpoint"]._failure is not None}
 
+    def diagnostics(self):
+        return dict(allocator=self.allocator.diagnostics(), ports={port.name: dict(
+            subscriptions=len(record['tokens']), **(record['endpoint'].store.diagnostics()
+                if isinstance(record['endpoint'], PortExporter) else {})) for port, record in self.records.items()})
+
     async def close(self):
         try:
             for port, record in tuple(self.records.items()):
+                for token in record['tokens']:
+                    self.runtime.demand.release(port, ('subscription', token))
                 if not record.get("adopted"):
                     await stop_endpoint(record["endpoint"])
                     if record.get('upstream') is not None:

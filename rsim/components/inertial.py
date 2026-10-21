@@ -78,4 +78,5 @@ class BodyIMU(PrimaryComponent):
                 continue
             self.previous = frame.sequence
             await self.publish(self.convert(frame.data), stamp_ns=frame.stamp_ns, clock=frame.clock,
-                               received_ns=frame.received_ns)
+                               received_ns=frame.received_ns,
+                               metadata=dict(frame.metadata, gravity_removed=self.remove_gravity))

@@ -109,7 +109,7 @@ class Ros1Bridge(Component):
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             self._log = self.log_path.open("ab")
         self.process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "rsim.runtime.exec", str(os.getpid()), *self.connection.command(),
+            sys.executable, "-m", "rsim.platforms.linux.exec", str(os.getpid()), *self.connection.command(),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=MAX_MESSAGE)
         self.task("ssh-stderr", self._stderr, hz=1000)

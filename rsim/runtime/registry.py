@@ -3,27 +3,19 @@ import asyncio
 from collections import OrderedDict
 import hashlib
 import json
-import os
-from pathlib import Path
 import uuid
 
 from rsim.core.errors import ComponentError, ProviderDisconnected, PortNotBound
-from .host import registry_directory
-from .platform import boot_id, user_id
-from . import local_socket
+from .paths import registry_directory, host_id
+from rsim.platforms import get_platform
 
 PROTOCOL = 2
 LIMIT = 65536
 
 
-def host_id():
-    # The boot identity also scopes CLOCK_MONOTONIC and stale registry entries.
-    return boot_id()
-
-
-def registry_paths(key, domain_id):
-    digest = hashlib.sha256(f'{host_id()}:{user_id()}:{domain_id}:{key}'.encode()).hexdigest()[:32]
-    base = registry_directory() / ('v2-' + digest)
+def registry_paths(key, domain_id, options=None):
+    digest = hashlib.sha256(f'{host_id(options)}:{domain_id}:{key}'.encode()).hexdigest()[:32]
+    base = registry_directory(options) / ('v3-' + digest)
     return base.with_suffix('.sock'), base.with_suffix('.lock')
 
 
@@ -35,18 +27,18 @@ class Connection:
     @classmethod
     async def connect(cls, path):
         try:
-            return cls(*await local_socket.open_connection(path, limit=LIMIT))
+            return cls(*await get_platform().ipc.open_connection(path, limit=LIMIT))
         except (FileNotFoundError, ConnectionRefusedError) as error:
             raise ProviderDisconnected('provider is not running; start it in its own environment') from error
 
-    async def request(self, op, *, request_id=None, **fields):
+    async def request(self, op, *, request_id=None, timeout=10, **fields):
         identifier = request_id or uuid.uuid4().hex
         packet = json.dumps(dict(protocol=PROTOCOL, id=identifier, op=op, **fields), allow_nan=False).encode() + b'\n'
         if len(packet) > LIMIT:
             raise ValueError('registry request too large')
         async with self.lock:
             try:
-                async with asyncio.timeout(10):
+                async with asyncio.timeout(timeout):
                     self.writer.write(packet)
                     await self.writer.drain()
                     line = await self.reader.readline()
@@ -76,11 +68,13 @@ class RegistryServer:
         self.on_empty = on_empty
         self.lock = asyncio.Lock()
         self.sessions = set()
+        self.subscription_counts = {}
+        self.closing = False
         self.tasks = set()
         self.server = None
 
     async def start(self, *, path=None, sock=None):
-        self.server = await local_socket.start_server(self.accept, path=path, sock=sock, limit=LIMIT)
+        self.server = await get_platform().ipc.start_server(self.accept, path=path, sock=sock, limit=LIMIT)
         return self
 
     def describe(self):
@@ -95,12 +89,19 @@ class RegistryServer:
                     pass
             if error is not None:
                 reported[name] = error
-        return dict(self.manifest, port_errors=reported)
+        metrics = getattr(self.bindings, 'diagnostics', None)
+        return dict(self.manifest, port_errors=reported, source_leases=len(self.sessions),
+                    port_subscriptions=sum(self.subscription_counts.values()),
+                    transport_stats=metrics() if metrics is not None else {})
 
     async def accept(self, reader, writer):
+        if self.closing:
+            writer.close()
+            return
         task = asyncio.current_task()
         self.tasks.add(task)
         self.sessions.add(writer)
+        self.subscription_counts[writer] = 0
         subscriptions, replies = {}, OrderedDict()
         try:
             while line := await reader.readline():
@@ -132,11 +133,13 @@ class RegistryServer:
                                     token = uuid.uuid4().hex
                                     descriptor = await self.bindings.acquire(self.ports[name], token)
                                     subscriptions[identifier] = (self.ports[name], token, descriptor)
+                                    self.subscription_counts[writer] = len(subscriptions)
                                 result = dict(subscriptions[identifier][2], subscription_id=identifier)
                             elif operation == 'unsubscribe':
                                 subscription = subscriptions.pop(request['subscription_id'], None)
                                 if subscription:
                                     await self.bindings.release(*subscription[:2])
+                                self.subscription_counts[writer] = len(subscriptions)
                                 result = {'released': True}
                             else:
                                 raise ValueError('unsupported registry operation')
@@ -156,12 +159,14 @@ class RegistryServer:
                 for port, token, _ in subscriptions.values():
                     await self.bindings.release(port, token)
                 self.sessions.discard(writer)
+                self.subscription_counts.pop(writer, None)
                 if not self.sessions and self.on_empty is not None:
                     self.on_empty()
             writer.close()
             self.tasks.discard(task)
 
     async def close(self):
+        self.closing = True
         if self.server is not None:
             self.server.close()
             await self.server.wait_closed()

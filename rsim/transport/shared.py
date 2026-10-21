@@ -5,10 +5,11 @@ invalidate existing read-only mmap views: the kernel holds their pages alive.
 """
 from __future__ import annotations
 
-from collections import deque
+from collections import deque, Counter
 from contextvars import ContextVar
 from pathlib import Path
-from .files import open_array, unlink, remove_tree
+from .files import open_array, open_shared, unlink, remove_tree, hardlink, backing_identity
+from rsim.platforms import get_platform
 import os
 import math
 import shutil
@@ -59,6 +60,13 @@ class SharedStore:
         self._committed = deque()
         self._reuse = reuse
         self._prepared = {}
+        self._metrics = Counter()
+        self._copies = Counter()
+
+    def diagnostics(self):
+        return dict(directory=str(self.directory), committed_samples=len(self._committed),
+                    active_files=sum(1 for _ in self.directory.rglob('*.npy')) if self.directory.exists() else 0,
+                    copy_reasons=dict(self._copies), **self._metrics)
 
     def prepare(self, data, memo=None):
         """Make retained worker history refer to shared arrays from publication.
@@ -79,6 +87,8 @@ class SharedStore:
                 return cached[1]
             result = self.allocate(data.shape, data.dtype)
             np.copyto(result, data)
+            self._metrics['materialized_bytes'] += data.nbytes
+            self._copies['first_export'] += 1
             result.flags.writeable = False
             memo[id(data)] = result
             if self._reuse:
@@ -123,6 +133,7 @@ class SharedStore:
         directory.mkdir(exist_ok=True)
         path = directory / (uuid.uuid4().hex + ".npy")
         array = open_array(path, dtype=dtype, shape=shape)
+        self._metrics['mapping_creations'] += 1
         array._rsim_owned = True
         weakref.finalize(array, _unlink, str(path))
         return array
@@ -138,8 +149,14 @@ class SharedStore:
                 raise TypeError("object arrays cannot be shared")
             path = directory / (uuid.uuid4().hex + ".npy")
             linked = False
-            if isinstance(data, np.memmap) and data.filename and Path(data.filename).exists():
-                original = open_array(data.filename)
+            reason = 'ordinary_array'
+            original = None
+            if isinstance(data, np.memmap) and data.filename:
+                try:
+                    original = open_array(data.filename)
+                except FileNotFoundError:
+                    reason = 'source_path_removed'
+            if original is not None:
                 if getattr(data, "_rsim_owned", False):
                     data.flags.writeable = False
                 # Views can retain memmap.offset even when their first element
@@ -147,11 +164,33 @@ class SharedStore:
                 if (data.base is data._mmap and data.shape == original.shape
                         and data.dtype == original.dtype and data.strides == original.strides
                         and data.offset == original.offset and not data.flags.writeable):
-                    os.link(data.filename, path)
-                    linked = True
+                    if getattr(data, '_rsim_backing_identity', None) == backing_identity(original):
+                        try:
+                            hardlink(data.filename, path)
+                            with open_shared(path) as file:
+                                linked = get_platform().files.identity(file) == backing_identity(data)
+                            if linked:
+                                self._metrics['hardlinks'] += 1
+                            else:
+                                unlink(path)
+                                reason = 'backing_changed_during_link'
+                        except FileNotFoundError:
+                            reason = 'source_path_removed'
+                        except OSError as error:
+                            if error.errno != 18 and getattr(error, 'winerror', None) != 17:
+                                raise
+                            reason = 'cross_volume'
+                    else:
+                        reason = 'unverified_backing'
+                else:
+                    reason = 'view_or_layout'
+            elif isinstance(data, np.memmap):
+                reason = 'source_path_removed'
             if not linked:
                 with path.open("wb") as file:
                     np.save(file, data, allow_pickle=False)
+                self._metrics['materialized_bytes'] += data.nbytes
+                self._copies[reason] += 1
             return {"type": "array", "path": str(path)}
         if isinstance(data, PointCloud):
             return {"type": "points", "points": self._encode(data.points, directory),
@@ -178,7 +217,7 @@ class SharedStore:
 
     def close(self):
         self._prepared.clear()
-        remove_tree(self.directory, ignore_errors=True)
+        remove_tree(self.directory)
 
 
 def decode(data, allowed_directory):

@@ -9,14 +9,15 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
     "core": {"core"},
-    "transport": {"core", "transport"},
-    "runtime": {"core", "transport", "runtime"},
+    "platforms": {"platforms"},
+    "transport": {"core", "platforms", "transport"},
+    "runtime": {"core", "platforms", "transport", "runtime"},
     "adapters": {"core", "runtime", "adapters"},
     "devices": {"core", "runtime", "devices"},
     "drivers": {"core", "runtime", "transport", "adapters", "devices", "drivers", "components"},
     "components": {"core", "transport", "components"},
     "config": {"core", "devices", "drivers", "config"},
-    "apps": {"core", "runtime", "transport", "adapters", "devices", "drivers", "components", "config", "apps"},
+    "apps": {"platforms", "core", "runtime", "transport", "adapters", "devices", "drivers", "components", "config", "apps"},
 }
 
 
@@ -112,3 +113,29 @@ except SystemExit as error:
 else:
     raise AssertionError('driver CLI did not run')
 ''')
+
+
+def test_os_primitives_do_not_leak_into_core_runtime_or_codecs():
+    native = {'fcntl', 'msvcrt', 'ctypes', 'win32api', 'win32job'}
+    forbidden_core = native | {'os', 'subprocess', 'platform', 'rclpy', 'rospy', 'cyclonedds'}
+    for layer in ('core', 'runtime', 'transport', 'platforms'):
+        for path in (ROOT / 'rsim' / layer).rglob('*.py'):
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [item.name for item in node.names]
+                elif isinstance(node, ast.ImportFrom) and not node.level:
+                    names = [node.module]
+                else:
+                    names = []
+                for name in names:
+                    top = name.split('.')[0]
+                    if layer == 'core':
+                        assert top not in forbidden_core, (path, name)
+                    if layer in ('runtime', 'transport'):
+                        assert top not in native, (path, name)
+                    if layer == 'platforms':
+                        assert top in sys.stdlib_module_names or name.startswith('rsim.platforms'), (path, name)
+                if layer in ('core', 'runtime', 'transport') and isinstance(node, ast.Attribute):
+                    if isinstance(node.value, ast.Name):
+                        assert (node.value.id, node.attr) not in {('os', 'name'), ('sys', 'platform')}, path

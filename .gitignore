@@ -9,6 +9,4 @@ AGENTS.md
 PROJECT.md
 .*
 !.gitignore
-
-# Local development context; not part of the published documentation.
-/PROJECT.md
+!.gitattributes

@@ -36,11 +36,13 @@ asyncio.run(main())
                     await asyncio.sleep(0.05)
             children = descendants(process.pid)
             assert len(children) >= 4  # two supervisors + two asyncio workers
-            stores = []
+            stores = set()
             for pid in children:
                 args = command(pid)
                 if "rsim.runtime.supervisor" in args:
-                    stores.append(Path(args[args.index("rsim.runtime.supervisor") + 1]))
+                    # Windows venv redirectors can repeat the same supervisor
+                    # argv in two PIDs; ownership is one instance directory.
+                    stores.add(Path(args[args.index("rsim.runtime.supervisor") + 1]))
             assert len(stores) == 2
             process.kill()
             await process.wait()

@@ -3,8 +3,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from .platform import install_shutdown
-import signal
+from rsim.platforms import get_platform
 import sys
 import traceback
 import uuid
@@ -12,6 +11,7 @@ import uuid
 import cloudpickle
 
 from .graph import Runtime
+from .options import RuntimeOptions
 from .deployment import worker_graph
 from rsim.transport.descriptor import DescriptorTransport, TransportConfig
 from .worker import write_status
@@ -28,9 +28,9 @@ async def run(directory):
     transport = DescriptorTransport(TransportConfig(**config["transport"]))
     roots, allocator = worker_graph(payload, config["group"], directory, transport)
     stopped = asyncio.Event()
-    install_shutdown(stopped, directory)
+    get_platform().process.install_shutdown(stopped, directory)
     try:
-        async with Runtime(*roots, _root_ports=False) as runtime:
+        async with Runtime(*roots, options=RuntimeOptions.from_dict(config.get('options')), _root_ports=False) as runtime:
             # Dynamic shared clients bind here, at the computation location.
             local_ports = {identifier: port for port, identifier in payload['port_ids'].items()
                            if payload['groups'][port.producer] == config['group']}

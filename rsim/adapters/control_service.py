@@ -55,10 +55,12 @@ class MotionService(RPCServer):
             result = self.results[self.job_id]
             if not result["done"]:
                 result.update(done=True, error="movement cancelled before starting")
-        await self.controller.stop()
-        if release:
-            self.owner = None
-            self.deadline = 0
+        try:
+            await self.controller.stop()
+        finally:
+            if release:
+                self.owner = None
+                self.deadline = 0
 
     async def expire(self):
         async with self.control_lock:
