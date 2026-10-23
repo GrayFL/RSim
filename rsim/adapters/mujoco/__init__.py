@@ -1,14 +1,11 @@
-"""Optional MuJoCo adapter. Importing this namespace opens no simulation."""
-from importlib import import_module
-from .config import RobotConfig, SensorConfig
+"""Protocol adapter; simulation models and applications live outside RSim."""
+from .protocol import CommandSpec, Observation, SimulationBackend
 
-__all__ = ["MuJoCoSource", "Simulation", "RobotConfig", "SensorConfig", "prepare_scene"]
+__all__ = ['MuJoCoSource', 'CommandSpec', 'Observation', 'SimulationBackend']
 
 
 def __getattr__(name):
-    modules = {"MuJoCoSource": "source", "Simulation": "simulation", "prepare_scene": "scene"}
-    if name not in modules:
+    if name != 'MuJoCoSource':
         raise AttributeError(name)
-    value = getattr(import_module(f"{__name__}.{modules[name]}"), name)
-    globals()[name] = value
-    return value
+    from .source import MuJoCoSource
+    return MuJoCoSource

@@ -22,8 +22,7 @@ SUITES = {
                     'test_shared', 'test_shared_component', 'test_host', 'test_host_cross_process',
                     'test_parent_death', 'test_windows_runtime', 'test_transport'],
     'cross-python': ['test_cross_environment', 'test_shared_component'],
-    'mujoco-physics': ['test_mujoco_physics', 'test_backend_contracts'],
-    'mujoco-render': ['test_mujoco_physics', 'test_mujoco_source', 'test_mujoco_scene', 'test_mujoco_composition'],
+    'mujoco-adapter': ['test_mujoco_adapter'],
     'ros2-integration': ['test_ros_context', 'test_ros_arrays', 'test_ros_topic_conversions',
                         'test_transport', 'test_chassis_service', 'test_service_separation', 'test_mapping'],
 }
@@ -31,8 +30,7 @@ REQUIRED = {
     'core': ['numpy', 'cloudpickle'],
     'runtime-dds': ['cyclonedds', 'psutil'],
     'cross-python': ['cyclonedds', 'psutil'],
-    'mujoco-physics': ['mujoco', 'trimesh', 'scipy', 'PIL', 'graphmap.pose'],
-    'mujoco-render': ['mujoco', 'trimesh', 'scipy', 'PIL', 'graphmap.pose', 'fast_simplification', 'cyclonedds'],
+    'mujoco-adapter': [],
     'ros2-integration': ['rclpy', 'sensor_msgs.msg', 'nav_msgs.msg', 'cyclonedds', 'graphmap.pose'],
 }
 
@@ -107,7 +105,7 @@ def main():
         versions['client'] = result.stdout
     (output / 'environment.json').write_text(json.dumps(versions, indent=2), encoding='utf-8')
     required = {'runtime-dds': 'process,shared-mapping,dds', 'cross-python': 'shared-mapping,dds',
-                'mujoco-render': 'render', 'ros2-integration': 'dds'}.get(args.suite, '')
+                'ros2-integration': 'dds'}.get(args.suite, '')
     environment = dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', OPENBLAS_NUM_THREADS='1',
                        RSIM_LOG_ROOT=str(output / 'logs'))
     if args.installed:
@@ -137,8 +135,6 @@ def main():
             selection = ('not ros2 and not ros_provider' if args.suite == 'runtime-dds' else
                          'cross_environment and ' + ('ros2' if args.cross_backend == 'ros2' else 'not ros2'))
             command += ['-k', selection]
-        elif args.suite == 'mujoco-physics':
-            command += ['-k', 'not rgbd']
         with (output / 'pytest.log').open('w', encoding='utf-8') as log:
             result = subprocess.run(command, cwd=directory, env=environment, stdout=log, stderr=subprocess.STDOUT, timeout=600)
         report = ET.parse(output / 'tests.xml')

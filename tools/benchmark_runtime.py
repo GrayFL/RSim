@@ -80,11 +80,12 @@ class Source(Component):
         self.current, self.fallback_ns = value, time.monotonic_ns()
 
     async def open(self):
-        if self.variant['file_policy'] == 'temporary':
+        if os.name == 'nt':
             native = get_platform().files
             self.original_open = native.open_shared
-            # Only this dedicated benchmark worker opts into the cache hint.
-            native.open_shared = partial(native.open_shared, temporary=True)
+            # Pin both policies so the normal-file baseline ignores the Windows default.
+            native.open_shared = partial(native.open_shared,
+                                         temporary=self.variant['file_policy'] == 'temporary')
         if self.variant['allocation'] == 'direct':
             from rsim.transport.shared import SharedStore
             self.store = SharedStore(self.directory)
@@ -339,7 +340,8 @@ def parser():
     result.add_argument('--elements', type=positive_int, help='override float32 element count for selected workloads')
     result.add_argument('--history', type=positive_int, default=4)
     result.add_argument('--workloads', default=','.join(WORKLOADS))
-    result.add_argument('--variant', choices=VARIANTS, action='append', help='repeat to compare alternatives (default: file)')
+    result.add_argument('--variant', choices=VARIANTS, action='append',
+                        help='repeat to compare alternatives (default: temporary on Windows, file on Linux)')
     result.add_argument('--repeat', type=positive_int, default=1)
     result.add_argument('--read-mode', choices=('sum', 'metadata'), default='sum')
     result.add_argument('--disk', action='append', help='device to emphasize in terminal output; JSON always records every device')
@@ -353,7 +355,7 @@ async def main():
     names = args.workloads.split(',')
     if any(name not in WORKLOADS for name in names) or len(names) != len(set(names)):
         cli.error('--workloads must contain distinct supported names: ' + ','.join(WORKLOADS))
-    variants = args.variant or ['file']
+    variants = args.variant or ['temporary' if os.name == 'nt' else 'file']
     if len(variants) != len(set(variants)):
         cli.error('duplicate --variant')
     if platform.system() != 'Windows' and any('temporary' in name for name in variants):

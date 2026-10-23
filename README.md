@@ -98,7 +98,7 @@ BlueSea 2D 雷达可通过 `rsim.drivers.BlueSea` 启动外部 ROS2 驱动，同
 
 ## 控制与仲裁
 
-MuJoCo 也可作为底层源：安装 `.[mujoco]` 后运行 `python -m rsim.apps.mujoco --scene "data/scene.glb" --headless --mode demo --seconds 12`。`rsim.drivers.MuJoCo` 提供差速动力学、雷达、RGBD、轮式里程计和真值；`rsim.devices.Chassis` 的应用代码可复用到仿真或真机服务。单进程示例使用显式 `inprocess`，也可用 `rsim.apps.mujoco_service` 启动物理 worker 和 DDS 控制服务，再从另一解释器执行设备应用；详见 [MuJoCo 接入](docs/mujoco.md) 和 [Windows 跨进程部署](docs/windows.md)。
+MuJoCo adapter 接受应用提供的仿真后端工厂，只处理 RSim 端口、生命周期与命令期限。接入教程为 `python -m examples.mujoco_adapter`；差速机器人、室内场景和应用属于独立的 MujocoSim 项目，不作为 RSim 固有实现。见 [MuJoCo 协议接入](docs/mujoco.md)。
 
 ```python
 from rsim import Connect, CommandMux, CommandInput, VelocityCommand

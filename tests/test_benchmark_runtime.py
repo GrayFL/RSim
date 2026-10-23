@@ -45,12 +45,9 @@ def test_transport_counters_exclude_live_file_sizes_and_subscription_counts():
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows temporary file cache hint')
-def test_temporary_hint_keeps_retained_mappings_and_hardlinks_working(tmp_path, monkeypatch):
-    from functools import partial
-    from rsim.platforms.windows import files
+def test_default_temporary_files_keep_retained_mappings_and_hardlinks_working(tmp_path):
     from rsim.core import Frame
     from rsim.transport.shared import SharedStore, decode
-    monkeypatch.setattr(files, 'open_shared', partial(files.open_shared, temporary=True))
     store = SharedStore(tmp_path / 'store')
     original = store.prepare(np.arange(16, dtype=np.float32))
     frame = decode(store.put(Frame(original, 1, 'test'))['data'], store.directory)

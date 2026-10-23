@@ -18,13 +18,14 @@ python tools/compare_benchmarks.py assets/benchmark/windows.json --output assets
 
 | 模式 | 数组生成方式 | Windows 文件属性 |
 |---|---|---|
-| `file`（默认） | 普通 ndarray，首次进入共享存储时复制 | 普通文件 |
-| `temporary` | 同上 | `FILE_ATTRIBUTE_TEMPORARY` |
+| `file`（Linux 默认） | 普通 ndarray，首次进入共享存储时复制 | 普通文件 |
+| `temporary`（Windows 默认） | 同上 | `FILE_ATTRIBUTE_TEMPORARY` |
 | `direct` | 源直接填写共享映射 | 普通文件 |
 | `direct-temporary` | 源直接填写共享映射 | `FILE_ATTRIBUTE_TEMPORARY` |
 
-临时属性只在本次基准的专用 worker 中启用，正常 RSim 默认行为不变。Windows 在内存
-充足时可根据此提示减少临时文件的存储写入，但它不是禁止落盘的开关。
+Windows 共享文件默认使用临时属性，基准默认也选择 `temporary`；显式选择 `file`
+或 `direct` 时会关闭此属性，保留普通文件对照。Windows 在内存充足时可根据此提示
+减少临时文件的存储写入，但它不是禁止落盘的开关。
 [Microsoft 文件属性说明](https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants)
 
 `direct` 在合成源中拥有一个 `SharedStore`，每帧分配独立映射，填充后转为只读。

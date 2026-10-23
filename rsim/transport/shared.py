@@ -187,7 +187,7 @@ class SharedStore:
             elif isinstance(data, np.memmap):
                 reason = 'source_path_removed'
             if not linked:
-                with path.open("wb") as file:
+                with open_shared(path, write=True, create=True) as file:
                     np.save(file, data, allow_pickle=False)
                 self._metrics['materialized_bytes'] += data.nbytes
                 self._copies[reason] += 1

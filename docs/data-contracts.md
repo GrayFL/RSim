@@ -33,13 +33,13 @@ validate_image(depth.data, camera_info=info.data, depth_unit='m', depth_type='op
 所在主机 monotonic 时钟，不能未经转换跨主机使用；provider 在最终应用点复验。
 MuJoCo 的模拟时间和 speedup 不延长命令 TTL，物理线程暂停后恢复也先检查主机时间。
 
-MuJoCo 的 truth 输出保持 ground truth 标记；轮速里程计为 `wheel_odometry` 来源，
+MujocoSim 项目侧绑定的 truth 输出保持 ground truth 标记；轮速里程计为 `wheel_odometry` 来源，
 `PlanarOdometry.pose` 为 estimate。模拟器 reset 更新 `episode`，保持发布标识与
 时间进展可辨识。现有平面估计器遇到 episode 改变明确失效，要求重建 Runtime，
 不会把跳变后的真值隐式接到旧轨迹。地图 revision 只描述地图版本，不能代替
 SampleId、时钟或仿真 episode。
 
-内存模拟与 MuJoCo 执行同一个读取 pose、零速、move(0)、rotate(0)、stop 的应用
-测试。非零轨迹分别使用算法与物理容差，见 `test_motion.py`、`test_mujoco_physics.py`。
+内存模拟的应用契约见 `test_backend_contracts.py`；具体 MuJoCo 机器人与传感器
+验证归 MujocoSim。RSim adapter 只测试协议桥接，不固定模拟构型或物理容差。
 命令过期、provider 输出 fallback、设备反馈停止是三件事；软件仿真只验证前两项
 及其模拟反馈，真实制动仍须在具备设备的安全环境单独验证。

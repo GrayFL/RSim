@@ -41,6 +41,8 @@ def test_copy_paths_and_removed_backing_have_explicit_metrics(tmp_path):
     first.close()
     result2 = decode(second.put(Frame(array, 2, 'test'))['data'], second.directory)
     assert second.diagnostics()['copy_reasons']['source_path_removed'] == 1
+    if os.name == 'nt':
+        assert all(path.stat().st_file_attributes & 0x100 for path in second.directory.rglob('*.npy'))
     np.testing.assert_array_equal(result, np.arange(2, 7))
     np.testing.assert_array_equal(result2, np.arange(12))
     second.close()

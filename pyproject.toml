@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = ["numpy>=1.26", "cloudpickle>=3"]
 
 [project.optional-dependencies]
-mujoco = ["mujoco>=3.3", "scipy", "trimesh>=4", "Pillow", "matplotlib", "graphmap>=0.1.0", "threadpoolctl>=3", "fast-simplification>=0.1.10"]
+mujoco = ["mujoco>=3.3"]
 imu = ["pyserial>=3.5", "graphmap>=0.1.0"]
 config = ["PyYAML>=6", "graphmap>=0.1.0"]
 motion = ["graphmap>=0.1.0", "threadpoolctl>=3"]

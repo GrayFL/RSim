@@ -54,8 +54,7 @@ RSIM_TEST_CLIENT_PYTHON=/path/to/other/bin/python python -m pytest tests/test_cr
 
 | 环境 | 按需执行 |
 |---|---|
-| MuJoCo 物理与 Pose v3 | `python -m pytest tests/test_mujoco_physics.py tests/test_backend_contracts.py -q` |
-| MuJoCo 与 OpenGL/EGL | `python -m pytest tests/test_mujoco_source.py tests/test_mujoco_scene.py tests/test_mujoco_composition.py -q` |
+| MuJoCo adapter | `python -m pytest tests/test_mujoco_adapter.py -q`；具体物理与渲染归 MujocoSim |
 | Linux ROS2 | `python -m pytest tests/test_ros_context.py tests/test_ros_arrays.py tests/test_ros_topic_conversions.py tests/test_chassis_service.py tests/test_service_separation.py -q` |
 
 graphmap 需要项目使用的 Pose v3 API。缺少后端、设备或环境时，跳过项表示未验证；

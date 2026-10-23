@@ -26,7 +26,7 @@ def filesystem_info(path):
                 drive_type=kind, remote=kind == 4)
 
 
-def open_shared(path, *, write=False, create=False, delete=False, temporary=False):
+def open_shared(path, *, write=False, create=False, delete=False, temporary=True):
     """Open with FILE_SHARE_DELETE so retained mappings can survive unlink."""
     import ctypes
     from ctypes import wintypes as w
@@ -36,7 +36,7 @@ def open_shared(path, *, write=False, create=False, delete=False, temporary=Fals
     create_file.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, w.LPVOID, w.DWORD, w.DWORD, w.HANDLE]
     create_file.restype = w.HANDLE
     access = 0x80000000 | (0x40000000 if write else 0) | (0x10000 if delete else 0)
-    # Opt-in cache hint, used by storage experiments. It is not a no-disk guarantee.
+    # Prefer caching short-lived shared files. This is not a no-disk guarantee.
     attributes = 0x100 if create and temporary else 0x80
     handle = create_file(str(Path(path).resolve()), access, 7, None, 2 if create else 3, attributes, None)
     if handle == w.HANDLE(-1).value:

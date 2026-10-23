@@ -9,7 +9,7 @@ Windows 保持 RSim 原有的 Component、Signal、CommandSink 和部署 API。D
 - Windows 10/11、本地 NTFS 文件系统及用户自己的临时目录。本实现依赖 Windows 的 POSIX 文件删除语义；没有把网络共享盘、FAT 或旧 Windows 列为支持环境。
 - 数组共享与注册表限于同一主机、同一用户；name/key、domain、接口声明匹配。不同主机的底盘小消息控制仍使用已有 DDS 服务方案，但不能直接共享本机 mmap 路径。
 
-MuJoCo 提供者另外安装 `rsim[mujoco,dds]`，RGBD 需要 OpenGL；仅控制/读取端安装 DDS 及所用数据模型依赖。需要 Pose 时准备 graphmap，保存 PNG 时准备 Pillow。
+MujocoSim 提供者在其项目中安装 `.[rsim,dds]`，RGBD 需要 OpenGL；仅控制/读取端安装 DDS 及所用数据模型依赖。需要 Pose 时准备 graphmap，保存 PNG 时准备 Pillow。
 
 ## 原有 API
 
@@ -33,16 +33,18 @@ if __name__ == "__main__":
 
 ## MuJoCo 三个进程的示例
 
-终端 A（具备 MuJoCo 的环境）：
+以下应用属于独立 MujocoSim 项目，应在该项目中执行；RSim 仅提供底层协议和共享机制。
+
+终端 A（具备 MujocoSim 的环境）：
 
 ```sh
-python -m rsim.apps.mujoco_service --scene "data/scene.glb" --name mujoco --domain 0 --enable-motion
+python -m mujocosim.apps.service --scene "data/scene.glb" --name mujoco --domain 0 --enable-motion
 ```
 
 终端 B（可以使用另一 Python 环境）：
 
 ```sh
-python -m rsim.apps.mujoco_motion --connect mujoco --domain 0 --output assets/mujoco/client
+python -m mujocosim.apps.motion --connect mujoco --domain 0 --output assets/runs/client
 ```
 
 数据与控制链路为：
@@ -63,7 +65,7 @@ python -m rsim.apps.mujoco_motion --connect mujoco --domain 0 --output assets/mu
 
 | 机制 | Linux | Windows |
 |---|---|---|
-| 数组存储 | `/dev/shm` tmpfs | 用户临时目录的 NPY 文件 + mmap |
+| 数组存储 | `/dev/shm` tmpfs | 用户临时目录的 NPY 文件 + mmap，默认 `FILE_ATTRIBUTE_TEMPORARY` |
 | 保留帧与淘汰 | unlink 后现有映射继续有效 | FILE_SHARE_DELETE + POSIX 删除语义，保留映射继续有效 |
 | 完整映射转发 | 硬链接复用 inode | NTFS 硬链接复用文件 ID |
 | 本地注册表/源租约 | Unix socket | 127.0.0.1 TCP + 每端点随机令牌 |
@@ -73,7 +75,7 @@ python -m rsim.apps.mujoco_motion --connect mujoco --domain 0 --output assets/mu
 | 正常停止 | SIGTERM | 停止文件触发协程清理；超时终止 Job |
 | 时钟实例身份 | boot UUID | boot GUID |
 
-Windows 映射使用文件作为后备存储，可以产生磁盘 I/O；没有宣称与 tmpfs 的性能相同。首次数组进入共享存储仍可能复制，完整的只读映射转发复用文件页；不代表传感器驱动端到端零拷贝。
+Windows 创建共享文件时默认使用 `FILE_ATTRIBUTE_TEMPORARY`，提示系统优先缓存短寿命数据以减少磁盘写入。平台原语 `open_shared(..., temporary=False)` 可显式关闭此提示；[本地基准](benchmark.md) 的普通文件模式保留这一对照。映射仍使用文件作为后备存储，可以产生磁盘 I/O。首次数组进入共享存储仍可能复制，完整的只读映射转发复用文件页；不代表传感器驱动端到端零拷贝。
 
 原语位于 `rsim.platforms.windows`，两个平台共用 `runtime.supervision/shared_launch/shared_supervisor` 策略。路径、startup/shutdown 参数、私有 ACL、SID namespace 和诊断入口见 [跨平台运行时](runtime.md)。`doctor --require shared-mapping --deep` 会在实际存储卷测试独立子进程保留映射和硬链接，并报告文件系统。已有开发环境中的双解释器检查见 [本地测试](validation.md)。
 
