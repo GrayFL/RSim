@@ -76,6 +76,7 @@ class WindowInput:
         return dict(
             keys=sorted(self.keys),
             brake=self.brake,
+            space=self.space,
             quit=self.quit,
             focused=self.focused,
             exit_reason=self.exit_reason,

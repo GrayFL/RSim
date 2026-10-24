@@ -47,11 +47,12 @@ class RoutedBindings:
             except ProviderDisconnected:
                 pass
 
-    async def refresh(self):
+    async def refresh(self, *, diagnostics=True):
         for group, (connection, _) in self.connections.items():
             try:
-                state = await connection.request('describe')
-                self.remote_diagnostics[group] = state.get('transport_stats', {})
+                state = await connection.request('describe', diagnostics=diagnostics)
+                if diagnostics:
+                    self.remote_diagnostics[group] = state.get('transport_stats', {})
                 errors = state.get('port_errors', {})
                 for port, identifier in self.plan.port_ids.items():
                     if identifier in errors:

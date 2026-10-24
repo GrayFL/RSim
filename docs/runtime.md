@@ -105,6 +105,14 @@ python -m rsim.apps.doctor --require render --json
 回收能力。它不会在普通 import 阶段运行。Runtime 的同步 `diagnostics()` 则描述
 当前图、需求、worker/实例路径、持久日志、端口计数及清理错误。
 
+SharedComponent 的 10 Hz 存活检查使用 `describe(diagnostics=False)`，仍返回实例身份、
+端口错误和租约计数，但省略 `transport_stats`；跨 placement 查询也传递该选项。
+这条路径不递归扫描共享文件目录，避免大量保留帧的诊断 I/O 阻塞命令确认。
+需要完整统计时显式调用 `await describe_shared(key, transport=...)`（位于
+`rsim.runtime.sharing`），或在已有连接上调用 `await connection.request('describe')`。
+显式 describe 默认仍包含完整 transport_stats；不要把该文件统计放入高频控制循环。
+定时刷新后的 `SharedComponent.manifest` 不保证包含完整统计，不能将缺失值解释为零。
+
 现有公共构图方式与封闭 dictionary wire codec 保持，端口协议仍为 v2；新增描述
 统计字段是可忽略字段。registry 使用新的 v3 namespace，旧实例须先在旧版本中关闭，
 再启动新版本；不能通过改目录名复用旧实例。平台原语直接使用 `rsim.platforms`，

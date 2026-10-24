@@ -77,7 +77,7 @@ class RegistryServer:
         self.server = await get_platform().ipc.start_server(self.accept, path=path, sock=sock, limit=LIMIT)
         return self
 
-    def describe(self):
+    def describe(self, *, diagnostics=True):
         errors = self.bindings.errors()
         reported = {}
         for name, port in self.ports.items():
@@ -89,10 +89,12 @@ class RegistryServer:
                     pass
             if error is not None:
                 reported[name] = error
-        metrics = getattr(self.bindings, 'diagnostics', None)
-        return dict(self.manifest, port_errors=reported, source_leases=len(self.sessions),
-                    port_subscriptions=sum(self.subscription_counts.values()),
-                    transport_stats=metrics() if metrics is not None else {})
+        result = dict(self.manifest, port_errors=reported, source_leases=len(self.sessions),
+                      port_subscriptions=sum(self.subscription_counts.values()))
+        if diagnostics:
+            metrics = getattr(self.bindings, 'diagnostics', None)
+            result['transport_stats'] = metrics() if metrics is not None else {}
+        return result
 
     async def accept(self, reader, writer):
         if self.closing:
@@ -118,10 +120,13 @@ class RegistryServer:
                                 raise ValueError('unsupported registry protocol')
                             operation = request.get('op')
                             if operation == 'describe':
+                                diagnostics = request.get('diagnostics', True)
+                                if type(diagnostics) is not bool:
+                                    raise ValueError('diagnostics must be a boolean')
                                 refresh = getattr(self.bindings, 'refresh', None)
                                 if refresh is not None:
-                                    await refresh()
-                                result = self.describe()
+                                    await refresh(diagnostics=diagnostics)
+                                result = self.describe(diagnostics=diagnostics)
                             elif operation == 'subscribe':
                                 if request.get('instance_id') != self.manifest['instance_id']:
                                     raise ValueError('provider instance changed; describe and explicitly rebind')

@@ -13,10 +13,10 @@ from rsim.core.commands import VelocityCommand
 
 @dataclass(frozen=True)
 class VehicleParameters:
-    acceleration: float = 0.22
+    acceleration: float = 0.4
     friction: float = 0.06
     drag: float = 4.0
-    angular_acceleration: float = 1.0
+    angular_acceleration: float = 1.2
     angular_friction: float = 0.12
     angular_drag: float = 5.5
     wheelbase: float = 0.45

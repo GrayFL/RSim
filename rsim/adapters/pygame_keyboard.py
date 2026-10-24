@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import multiprocessing
+import os
 import socket
 import time
 
@@ -12,6 +13,24 @@ from rsim.core.component import ComponentError, PrimaryComponent
 
 DEFAULT_FONTS = "Inconsolata,Sarasa Mono SC"
 logger = logging.getLogger(__name__)
+
+
+def _datagram_pair():
+    # Windows Python has no AF_UNIX datagram socketpair. Connected loopback
+    # UDP preserves the bounded, message-oriented protocol used by the window.
+    if os.name != 'nt' and hasattr(socket, 'AF_UNIX'):
+        return socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    pair = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(2)]
+    try:
+        for channel in pair:
+            channel.bind(('127.0.0.1', 0))
+        pair[0].connect(pair[1].getsockname())
+        pair[1].connect(pair[0].getsockname())
+        return tuple(pair)
+    except BaseException:
+        for channel in pair:
+            channel.close()
+        raise
 
 
 class PygameKeyboard(PrimaryComponent):
@@ -61,7 +80,7 @@ class PygameKeyboard(PrimaryComponent):
         self.exit_reason = None
         self.packet = None
         self.stalled = False
-        self.channel, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.channel, child = _datagram_pair()
         for channel in (self.channel, child):
             channel.setblocking(False)
             channel.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16384)
@@ -117,6 +136,7 @@ class PygameKeyboard(PrimaryComponent):
             logger.info("Window input recovered; control requires a new connection and fresh key press")
         self.stalled = stale
         value = {key: packet[key] for key in ("keys", "brake", "quit", "focused")}
+        value['space'] = packet.get('space', False)
         if self.recover_stalls:
             value["stalled"] = stale
         if stale:

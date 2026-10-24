@@ -96,6 +96,8 @@ python -m rsim.apps.keyboard_control --input pygame --dry-run
 
 字体默认 `Inconsolata,Sarasa Mono SC`，按顺序逐字回退，不使用字体图标；字体需要安装在 **运行 Python 的一端**。可用 `--font "字体一,字体二"` 更改顺序。都不可用时回退 pygame 默认字体，但该字体未必包含中文。`--window-hz` 默认20，范围1–60；X转发可选10以降低绘制频率。只更新变化区域，未初始化音频设备。
 
+`PygameKeyboard` 的窗口子进程在 Windows 使用一对已连接的回环 UDP 数据报通道，其他系统使用 Unix 数据报 socketpair；均为有界非阻塞消息，不要求 Windows Python 提供 AF_UNIX。输出中的 `space` 表示当前明确按下空格，区别于初始/失焦时保持的 `brake` 状态，便于上层导航应用只在手动操作时抢占。Windows 中文可选 `--font "Inconsolata,Microsoft YaHei"`。本次在 MujocoSim 的真实窗口集成中验证，未据此宣称其他控制/重连应用已完成 Windows 回归。
+
 GUI 在独立子进程的主线程运行，通过有界非阻塞通道传递按键与显示数据；控制协程和 DDS 留在父进程。输入/模型更新与发送确认分别计时，只保留最新待发送指令，等待消耗其有效期，不积压旧按键。GUI 卡住、退出或输入超过 `max_loop_gap` 没有更新时停止控制，现有命令期限仍生效。GUI 依赖属于 `rsim[teleop]`，也可在已有控制环境内单独安装 `pygame>=2.5`。从函数调用时使用 [PygameKeyboard](../rsim/adapters/pygame_keyboard.py) 与现有 `Teleoperation` 组装，脚本入口需放在 `if __name__ == "__main__":` 下，以支持 spawn。
 
 pygame CLI 默认自动重连：连接超时、指令确认超时或服务重启后，停止续发运动指令，请求零速/释放会话，窗口保留并显示 `RECONNECTING`。临时输入停顿同样停止控制，等待输入恢复后重连；不会用旧输入维持运动。重试间隔从1秒逐步增加到最多5秒；`--reconnect-delay` 可设置初始间隔（0.1–5秒）。每次重建独立 DDS 客户端、时钟与控制会话；取得新位姿并确认零速后才显示已连接。**重连不会恢复旧速度或旧按键，须松开按键后重新按下才会运动。** 网络不可达时，底盘原有指令 TTL/deadman 负责停止，不因重试延长有效期，也不自动启动硬件或服务。窗口始终可用 Escape、关窗或 Ctrl-C 退出；窗口进程死亡仍需重新启动客户端。

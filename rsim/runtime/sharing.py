@@ -189,7 +189,10 @@ class SharedComponent(Component):
     async def check(self):
         if self.connection.reader.at_eof():
             raise ProviderDisconnected('provider instance ended; explicitly reopen this view')
-        manifest = await self.connection.request('describe')
+        # Liveness checks need identity and port failures, not a recursive
+        # shared-file census. Scanning every retained sample at 10 Hz blocks
+        # the provider event loop and can starve command acknowledgements.
+        manifest = await self.connection.request('describe', diagnostics=False)
         if manifest['instance_id'] != self.manifest['instance_id']:
             raise ProviderDisconnected('provider instance changed')
         self.manifest = manifest
