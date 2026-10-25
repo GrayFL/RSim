@@ -62,7 +62,7 @@ class TowingWindow(DynamicWindow):
         endpoint = len(history) - 1
         p = self.model.parameters
         # Coupled braking can maintain v while yaw decelerates; sum bounds both.
-        duration = np.max(abs(speeds[:, 0])) / p.linear_acceleration + np.max(abs(speeds[:, 1])) / p.angular_acceleration + .1
+        duration = np.max(abs(speeds[:, 0])) / p.linear_deceleration + np.max(abs(speeds[:, 1])) / p.angular_deceleration + .1
         phase(duration, np.zeros_like(commands))
         return np.stack(history, axis=1), np.stack(sweeps, axis=1), endpoint
 

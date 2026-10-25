@@ -23,7 +23,7 @@ from ros1_agent import encode, monotonic, monotonic_ns
 class VelocityGate(object):
     """Final boundary: immutable deployment mode, freshness, TTL and anti-replay."""
     def __init__(self, session, enabled=False, max_linear=1.6, max_angular=.8,
-                 min_turn_radius=.3, rear_extent=.81, rear_lateral_speed=.12):
+                 min_turn_radius=.3, rear_extent=.81, rear_lateral_speed=.12, profiles=None):
         self.session, self.enabled = session, enabled
         self.max_linear, self.max_angular = max_linear, max_angular
         self.sequence, self.epoch = 0, None
@@ -31,6 +31,7 @@ class VelocityGate(object):
         self.reason = 'no_command'
         self.min_turn_radius, self.rear_extent, self.rear_lateral_speed = min_turn_radius, rear_extent, rear_lateral_speed
         self.requested_arm = False
+        self.profiles = profiles or {}
 
     def update(self, packet, now_ns):
         if not packet or packet.get('session') != self.session:
@@ -50,9 +51,10 @@ class VelocityGate(object):
                 raise ValueError('expired or excessive TTL')
             mode = packet.get('drive_mode', 'towing')
             if mode not in ('towing', 'differential'): raise ValueError('unknown drive mode')
-            if abs(v) > min(1.6, self.max_linear) + 1e-9 or abs(w) > self.max_angular + 1e-9:
+            profile = self.profiles.get(mode, {})
+            if abs(v) > min(1.6, self.max_linear, profile.get('max_linear', self.max_linear)) + 1e-9 or abs(w) > min(self.max_angular, profile.get('max_angular', self.max_angular)) + 1e-9:
                 raise ValueError('velocity outside configured limits')
-            if mode == 'towing' and (v < 0 or abs(w) * self.min_turn_radius > v + 1e-8 or abs(w) * self.rear_extent > self.rear_lateral_speed + 1e-8):
+            if mode == 'towing' and (abs(w) * profile.get('min_turn_radius', self.min_turn_radius) > abs(v) + 1e-8 or abs(w) * profile.get('rear_extent', self.rear_extent) > profile.get('rear_lateral_speed', self.rear_lateral_speed) + 1e-8):
                 raise ValueError('velocity violates towing envelope')
             self.epoch, self.deadline = epoch, deadline
             self.requested_arm = bool(packet.get('armed'))
@@ -103,7 +105,7 @@ class Relay(object):
         self.ownership_time = 0.
         self.gate = VelocityGate(session, enabled, config['max_linear'], config['max_angular'],
                                  config.get('min_turn_radius', .3), config.get('rear_extent', .81),
-                                 config.get('rear_lateral_speed', .12))
+                                 config.get('rear_lateral_speed', .12), config.get('profiles'))
         self.listener = tf.TransformListener()
         self.monitor = rospy.Publisher(config.get('monitor_topic', '/rsim/cmd_vel'), Twist, queue_size=1)
         self.hardware = None

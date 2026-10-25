@@ -5,6 +5,9 @@ let visual={}, view={x:0,y:0,scale:30}, staged=null, catalog={maps:[],current_ma
 let lastPing=0,lastStatus=0,lastVisual=0,pollBusy=false,visualBusy=false,imageKey='',mapRequest=0;
 let controlReady=false,settingPending=false,controlLag=false;
 let clockSamples=[];
+let controlsConfig={keyboard:{forward:'KeyW',backward:'KeyS',left:'KeyA',right:'KeyD',stop:'Space'},touch_mode:'buttons',manual:{}};
+const touchKeys=new Map();
+let joystickPointer=null;
 function observeClock(clock){const now=performance.now();clockSamples=clockSamples.filter(p=>now-p.at<10000);clockSamples.push({at:now,offset:clock-now});if(clockSamples.length>80)clockSamples.shift();offset=Math.max(...clockSamples.map(p=>p.offset));}
 function controlButtons(){for(const id of ['goal','driveMode','extended','resume','saveSpeeds'])$(id).disabled=!controlReady||settingPending;$('arm').disabled=latest.zero_only!==false||!controlReady||settingPending;}
 function notice(text){$('notification').textContent=text;}
@@ -26,7 +29,7 @@ async function api(path,body){
   return result;
 }
 function envelope(op,extra={}){return {op,lease,sequence:++seq,deadline_ms:performance.now()+offset+(['goal','footprint','drive_mode','speeds'].includes(op)?1600:400),...extra};}
-function clearManual(){held=null;keys.clear();document.querySelectorAll('.held').forEach(e=>e.classList.remove('held'));}
+function clearManual(){held=null;keys.clear();touchKeys.clear();joystickPointer=null;document.querySelectorAll('.held').forEach(e=>e.classList.remove('held'));$('joyHandle').style.transform='translate(-50%,-50%)';}
 function send(op,extra={}){
   if(['stop','pause','cancel'].includes(op))clearManual();
   if(controlReady&&socket&&socket.readyState===WebSocket.OPEN&&socket.bufferedAmount<4096){if(['arm','drive_mode','footprint','speeds'].includes(op)){settingPending=true;controlButtons();}socket.send(JSON.stringify(envelope(op,extra)));return;}
@@ -54,28 +57,35 @@ $('scale').oninput=()=>{$('scaleText').textContent=$('scale').value+'%';};
 function axes(){
   const scale=Number($('scale').value)/100;
   if(held)return {throttle:held.throttle*scale,steering:held.steering*scale};
-  const differential=latest.drive_mode==='differential';
-  return {throttle:(Number(keys.has('w'))-Number(differential&&keys.has('s')))*scale,steering:(Number(keys.has('a'))-Number(keys.has('d')))*scale};
+  const active=new Set([...keys,...touchKeys.values()]);
+  return {throttle:(Number(active.has('forward'))-Number(active.has('backward')))*scale,steering:(Number(active.has('left'))-Number(active.has('right')))*scale};
 }
-function manualHeld(){return held!==null||keys.has('w')||(latest.drive_mode==='differential'&&['a','s','d'].some(k=>keys.has(k)));}
+function manualHeld(){return held!==null||keys.size>0||touchKeys.size>0;}
+function sendAxes(){if(controlReady)send('manual',axes());}
 document.querySelectorAll('.drive').forEach(button=>{
-  button.addEventListener('pointerdown',e=>{e.preventDefault();button.setPointerCapture(e.pointerId);held={throttle:Number(button.dataset.throttle),steering:Number(button.dataset.steer)};button.classList.add('held');send('manual',axes());});
-  for(const event of ['pointerup','pointercancel','lostpointercapture'])button.addEventListener(event,()=>{if(held!==null){clearManual();send('manual',{throttle:0,steering:0});}});
+  button.addEventListener('pointerdown',e=>{e.preventDefault();if(!controlReady||settingPending)return;button.setPointerCapture(e.pointerId);touchKeys.set(e.pointerId,button.dataset.action);button.classList.add('held');sendAxes();});
+  for(const event of ['pointerup','pointercancel','lostpointercapture'])button.addEventListener(event,e=>{if(touchKeys.delete(e.pointerId)){button.classList.remove('held');sendAxes();}});
 });
-document.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName))return;const key=e.key.toLowerCase();if(key===' '){e.preventDefault();stop();}if(['w','a','s','d'].includes(key)){e.preventDefault();if(key==='s'&&latest.drive_mode!=='differential'){stop();return;}keys.add(key);}});
-document.addEventListener('keyup',e=>{const key=e.key.toLowerCase();if(!keys.delete(key))return;if(!manualHeld())send('manual',{throttle:0,steering:0});});
+function editing(){return $('developer').open||document.activeElement.isContentEditable||['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName);}
+document.addEventListener('keydown',e=>{if(editing()||e.ctrlKey||e.altKey||e.metaKey)return;const action=Object.keys(controlsConfig.keyboard).find(k=>controlsConfig.keyboard[k]===e.code);if(!action)return;e.preventDefault();if(e.repeat)return;if(action==='stop'){stop();return;}if(!controlReady||settingPending)return;keys.add(action);sendAxes();});
+document.addEventListener('keyup',e=>{const action=Object.keys(controlsConfig.keyboard).find(k=>controlsConfig.keyboard[k]===e.code);if(keys.delete(action)){e.preventDefault();sendAxes();}});
+const joystick=$('joystick');
+function joystickMove(e){const r=joystick.getBoundingClientRect(),x=Math.max(-1,Math.min(1,(e.clientX-r.left-r.width/2)/(r.width*.43))),y=Math.max(-1,Math.min(1,(r.top+r.height/2-e.clientY)/(r.height*.43)));held={throttle:Math.abs(y)<.08?0:y,steering:Math.abs(x)<.08?0:-x};$('joyHandle').style.transform=`translate(calc(-50% + ${x*r.width*.43}px),calc(-50% - ${y*r.height*.43}px))`;}
+joystick.addEventListener('pointerdown',e=>{e.preventDefault();if(!controlReady||settingPending||joystickPointer!==null)return;joystickPointer=e.pointerId;joystick.setPointerCapture(e.pointerId);joystickMove(e);sendAxes();});
+joystick.addEventListener('pointermove',e=>{if(e.pointerId===joystickPointer)joystickMove(e);});
+for(const event of ['pointerup','pointercancel','lostpointercapture'])joystick.addEventListener(event,e=>{if(e.pointerId===joystickPointer){held=null;joystickPointer=null;$('joyHandle').style.transform='translate(-50%,-50%)';sendAxes();}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){stop();if(socket)socket.close();}});
 window.addEventListener('blur',()=>{clearManual();stop();});
 window.addEventListener('pagehide',()=>{navigator.sendBeacon('/api/control',new Blob([JSON.stringify({op:'stop'})],{type:'application/json'}));if(socket)socket.close();});
-setInterval(()=>{if(!lease||document.hidden||!socket||socket.readyState!==WebSocket.OPEN)return;const now=performance.now();if(manualHeld()){send('manual',axes());lastPing=now;}else if(now-lastPing>200){send('heartbeat');lastPing=now;}},80);
+setInterval(()=>{if(!lease||settingPending||document.hidden||!socket||socket.readyState!==WebSocket.OPEN)return;const now=performance.now();if(manualHeld()){send('manual',axes());lastPing=now;}else if(now-lastPing>200){send('heartbeat');lastPing=now;}},80);
 async function poll(){if(pollBusy||document.hidden)return;pollBusy=true;try{
   latest=await api('/api/status');$('dot').className=latest.hardware.health==='bridge_unavailable'?'':'live';
   $('connection').textContent=lease?'控制通道在线':'状态已连接';$('modeBadge').textContent=latest.simulated?'仿真环境':latest.zero_only?'零速保护':latest.armed?'运动已使能':'运动未使能';
   $('reason').textContent=latest.mode+' · '+latest.reason;$('speed').textContent=latest.measured?Number(latest.measured[0]).toFixed(3):'—';$('yawSpeed').textContent=latest.measured?Number(latest.measured[1]).toFixed(3):'—';$('latency').textContent=latest.loop_ms;
   $('estop').textContent=latest.hardware.estop===true?'已按下':latest.hardware.estop===false?'未按下':'未知';$('gate').textContent=latest.hardware.health;controlButtons();
-  $('armHint').textContent=latest.zero_only?'零速部署：可预览规划，实际速度保持为零。':'松开遥控或断开控制连接会停车。';
+  $('armHint').textContent=latest.zero_only?'零速部署：可预览规划，实际速度保持为零。':'松开遥控会停车；空格或连接中断会解除使能。';
   if(latest.footprint)$('extended').checked=latest.footprint.rear>.3;
-  $('driveMode').value=latest.drive_mode||'towing';document.querySelector('.differential').hidden=latest.drive_mode!=='differential';
+  $('driveMode').value=latest.drive_mode||'towing';$('brakeHint').textContent=latest.manual_control?.brake_locked?'正在刹车：停稳后松开反向键，再按才会倒车。':'';if(typeof updateControlLabels==='function')updateControlLabels();
   updateAuxiliary();
   const chosen=$('mapSelect').value?catalog.maps.find(m=>m.map_uuid===$('mapSelect').value):latest.map;
   if(chosen&&(!meta||chosen.version!==meta.version)){meta=chosen;mapImage=null;imageKey='';if(latest.pose&&showingLive()){view.x=latest.pose[0];view.y=latest.pose[1];}}

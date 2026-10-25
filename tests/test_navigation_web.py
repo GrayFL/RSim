@@ -1,5 +1,7 @@
 """API/authentication, control ownership and disconnect safety against simulation."""
 import json
+import hashlib
+import re
 import time
 from pathlib import Path
 import pytest
@@ -49,8 +51,16 @@ def test_auth_origin_map_and_validation(system):
     assert png.content.startswith(b'\x89PNG')
     assert client.get('/api/map.png', headers={'If-None-Match': png.headers['etag']}).status_code == 304
     assert len(client.get('/api/status?compact=true').content) < 3000
-    assert client.get('/').status_code == 200
-    assert "frame-ancestors 'none'" in client.get('/').headers['content-security-policy']
+    page = client.get('/', headers={'If-Modified-Since': 'Fri, 31 Dec 9999 23:59:59 GMT'})
+    assert page.status_code == 200
+    assert page.headers['cache-control'] == 'no-store'
+    assert "frame-ancestors 'none'" in page.headers['content-security-policy']
+    assets = re.findall(r'(?:src|href)="(/static/[^\"]+)"', page.text)
+    assert len(assets) == 3
+    for url in assets:
+        response = client.get(url)
+        assert response.status_code == 200
+        assert url.endswith('?v=' + hashlib.sha256(response.content).hexdigest()[:16])
 
 
 def test_single_owner_replay_expiry_and_zero_only(system):

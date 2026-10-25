@@ -80,6 +80,8 @@ class NavigationClient(Component):
 
     async def command(self, request): return await self.rpc('command', **request)
 
+    async def apply_settings(self, values): return await self.rpc('settings', values=values)
+
     async def stop(self, reason='operator_stop', cancel=False):
         return await self.rpc('stop', reason=reason, cancel=cancel)
 

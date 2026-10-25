@@ -26,12 +26,12 @@ def test_shared_model_brakes_without_pivot_or_reverse():
     for _ in range(150):
         old = current.copy()
         current = model.advance_velocity(current, [0, 0], .02)
-        assert abs(current[0] - old[0]) <= model.parameters.linear_acceleration * .02 + 1e-9
-        assert abs(current[1] - old[1]) <= model.parameters.angular_acceleration * .02 + 1e-9
+        assert abs(current[0] - old[0]) <= model.parameters.linear_deceleration * .02 + 1e-9
+        assert abs(current[1] - old[1]) <= model.parameters.angular_deceleration * .02 + 1e-9
         assert current[0] >= abs(current[1]) * .3 - 1e-9
         assert current[0] >= 0
     assert np.allclose(current, 0)
-    with pytest.raises(ValueError): model.targets(-1, 0)
+    assert model.targets(-1, 0).linear_x == -model.parameters.max_linear
 
 
 def obstacle_setup(body, points):

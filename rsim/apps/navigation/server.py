@@ -8,11 +8,13 @@ from pathlib import Path
 import time
 import hashlib
 import uuid
+import os
+from copy import deepcopy
 from typing import Literal
 import urllib.request
 
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -44,10 +46,19 @@ class Control(BaseModel):
 def clock_ms(): return time.monotonic() * 1000
 
 
-def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, allowed_hosts=None, runtime_options=None):
+def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, allowed_hosts=None, runtime_options=None, settings_store=None):
     if token is not None and len(token) < 24: raise ValueError('control token must contain at least 24 characters')
     data_dir = Path(data_dir or 'assets/navigation')
+    from .settings import SettingsStore, apply_config
+    settings = settings_store or SettingsStore(data_dir / 'settings.json', service.config)
+    settings_lock = asyncio.Lock()
     static = Path(__file__).with_name('static')
+    # Archive deployments can preserve old mtimes. Give each asset a content
+    # version so WebView cannot reuse an older file after an HTML upgrade.
+    index_html = (static / 'index.html').read_text(encoding='utf8')
+    for asset in ('style.css', 'app.js', 'developer.js'):
+        revision = hashlib.sha256((static / asset).read_bytes()).hexdigest()[:16]
+        index_html = index_html.replace(f'/static/{asset}"', f'/static/{asset}?v={revision}"')
     from .catalog import MapCatalog
     catalog = MapCatalog(service.config.get('catalog', {}))
     from .auxiliary import VendorSupport, VoiceSession
@@ -103,7 +114,7 @@ def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, a
         return response
 
     @app.get('/')
-    async def index(): return FileResponse(static / 'index.html')
+    async def index(): return HTMLResponse(index_html, headers={'Cache-Control': 'no-store'})
 
     @app.get('/api/health')
     async def health():
@@ -147,12 +158,15 @@ def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, a
             await asyncio.to_thread(catalog.assert_active, command.map_uuid, service.map)
             await service.commit_goal(ticket, data)
         else: await service.command(data)
-        if command.op == 'speeds':
-            data_dir.mkdir(parents=True, exist_ok=True)
-            target = data_dir/'speed-settings.json'
-            temporary = target.with_suffix('.next')
-            temporary.write_text(json.dumps({k: data[k] for k in ('navigation', 'manual', 'angular', 'handles')}), encoding='utf8')
-            temporary.replace(target)
+        if command.op in ('speeds', 'drive_mode', 'footprint'):
+            async with settings_lock:
+                values = deepcopy(settings.values)
+                if command.op == 'speeds': values['speed_limits'] = {k: data[k] for k in ('navigation', 'manual', 'angular', 'handles')}
+                elif command.op == 'drive_mode': values['drive_mode'] = data['drive_mode']
+                else: values['footprint']['rear'] = .81 if data['extended'] else .27
+                settings.save(values, settings.revision)
+                key = {'speeds': 'speed_limits', 'drive_mode': 'drive_mode', 'footprint': 'footprint'}[command.op]
+                service.config[key] = deepcopy(settings.active[key])
         return {'ok': True, 'op': command.op, 'sequence': command.sequence, 'clock_ms': clock_ms(), 'mode': service.mode}
 
     @app.post('/api/control')
@@ -262,6 +276,49 @@ def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, a
         if not isinstance(body, dict): raise ValueError('expected an object')
         if not clock_ms() < float(body.get('deadline_ms', 0)) <= clock_ms() + 2000: raise ValueError('auxiliary request expired')
         await service.authorize_request(body.get('lease'), body.get('sequence'))
+
+    def lifecycle_state():
+        path = os.environ.get('RSIM_LIFECYCLE_STATE')
+        try:
+            state = json.loads(Path(path).read_text()) if path else {}
+            return state if state.get('child_pid') == os.getpid() and time.time() - state.get('updated_at', 0) < 10 else {}
+        except (OSError, ValueError): return {}
+
+    @app.get('/api/settings')
+    async def get_settings():
+        return dict(settings.view(), restart_available=bool(lifecycle_state()), lifecycle=lifecycle_state())
+
+    @app.post('/api/settings')
+    async def save_settings(request: Request):
+        body = await request.json()
+        await auxiliary_authorize(body)
+        async with settings_lock:
+            values = settings.check(body.get('values'), body.get('revision'))
+            previous = deepcopy(settings.active)
+            active = settings.live(values)
+            await service.apply_settings(active)
+            try: settings.save(values, body['revision'])
+            except (OSError, ValueError):
+                await service.apply_settings(previous)
+                raise
+            apply_config(service.config, active)
+            return dict(ok=True, **settings.view())
+
+    @app.post('/api/service/restart')
+    async def restart_service(request: Request, background: BackgroundTasks):
+        body = await request.json()
+        await auxiliary_authorize(body)
+        if not lifecycle_state(): raise ValueError('service was not started by the managed launcher')
+        if service.status().get('maintenance'): raise ValueError('finish the auxiliary operation before restarting')
+        await service.stop('service_restart', cancel=True)
+        async def request_restart():
+            await asyncio.sleep(.4)
+            target = Path(os.environ['RSIM_RESTART_REQUEST'])
+            temporary = target.with_suffix('.next')
+            temporary.write_text(json.dumps(dict(child_pid=os.getpid(), requested_at=time.time())))
+            temporary.replace(target)
+        background.add_task(request_restart)
+        return dict(ok=True, restarting=True)
 
     @app.get('/api/mapping')
     @app.get('/api/mapping/status')

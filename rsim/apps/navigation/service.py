@@ -11,6 +11,7 @@ import numpy as np
 from ...core.component import Component
 from ...core.commands import VelocityCommand, CommandSink
 from ...components.vehicle import TowingParameters
+from ...components.manual_control import ManualController
 from ...components.towing_geometry import BodyFootprint
 from ...components.towing_navigation import TowingNavigator
 from ...components.navigation_map import OccupancyMap, laser_points, yaw_of
@@ -40,11 +41,12 @@ class NavigationService(Component):
         self.mode, self.reason = 'idle', 'starting'
         self.goal = None
         self.axes = (0., 0.)
+        self.manual_control = ManualController()
         self.armed = False
         self.speed_limits = dict(navigation=min(1., self.parameters.max_linear), manual=min(1., self.parameters.max_linear),
                                  angular=self.parameters.max_angular, handles=True)
         self.speed_limits.update(config.get('speed_limits', {}))
-        for key, maximum in (('navigation', self.parameters.max_linear), ('manual', self.parameters.max_linear), ('angular', self.parameters.max_angular)):
+        for key, maximum in (('navigation', 1.6), ('manual', 1.6), ('angular', .8)):
             if not isinstance(self.speed_limits[key], (int, float)) or not 0 < self.speed_limits[key] <= maximum:
                 raise ValueError('invalid configured speed limit: ' + key)
         if type(self.speed_limits['handles']) is not bool: raise ValueError('handles setting must be boolean')
@@ -103,6 +105,8 @@ class NavigationService(Component):
                 await self.set_maintenance(data.get('operation'))
             elif op == 'pedal':
                 await self.pedal_action(data['action'])
+            elif op == 'settings':
+                await self.apply_settings(data['values'])
             elif op == 'localize':
                 return {'id': await self.enqueue_localization(data)}
             else: raise ValueError('unknown navigation request')
@@ -184,6 +188,24 @@ class NavigationService(Component):
         await self.stop('maintenance_' + str(operation), cancel=True)
         self.maintenance = operation
 
+    async def apply_settings(self, values):
+        from .settings import validate, apply_config
+        values = validate(values)
+        if self.measured is None or np.max(np.abs(self.measured)) > .02:
+            await self.stop('settings_waiting_for_stop')
+            raise ValueError('stop and wait for the chassis before applying settings')
+        await self.stop('settings_changed', cancel=True)
+        apply_config(self.config, values)
+        self.drive_mode = values['drive_mode']
+        self.parameters = TowingParameters(**values['profiles'][self.drive_mode])
+        self.footprint = BodyFootprint(**values['footprint'])
+        self.speed_limits = dict(values['speed_limits'])
+        self.navigator = self.new_navigator()
+        self.bridge.drive_mode = self.drive_mode
+        if self.simulated:
+            from ...components.vehicle import drive_model
+            self.bridge.model = drive_model(self.parameters, self.drive_mode)
+
     async def pedal_action(self, action):
         await self.stop('pedal_action', cancel=True)
         self.footprint = replace(self.footprint, rear=.81)
@@ -244,14 +266,15 @@ class NavigationService(Component):
         await self.bridge.velocity.set(VelocityCommand(), ttl=.25, _writer=self)
         self.published = [0., 0.]
 
-    async def stop(self, reason='operator_stop', cancel=False):
+    async def stop(self, reason='operator_stop', cancel=False, keep_armed=False):
         self.last_stop = dict(reason=reason, at_ms=round(time.monotonic()*1000, 1),
                               mode=self.mode, armed=self.armed, loop_ms=round(self.loop_ms, 1))
         self.reserved_goal = None
         self.generation += 1
-        self.armed = False
+        self.armed = self.armed if keep_armed else False
         self.manual_deadline = 0.
         self.axes = (0., 0.)
+        self.manual_control.reset()
         self.reason = reason
         if cancel: self.goal = None
         self.mode = 'paused' if self.goal is not None else 'idle'
@@ -285,9 +308,10 @@ class NavigationService(Component):
             self.armed = True
         elif op == 'manual':
             throttle, steer = float(request.get('throttle', 0)), float(request.get('steering', 0))
-            self.navigator.model.targets(throttle, steer)  # Validate normalized axes.
+            self.manual_control.input(throttle, steer, self.measured or [0., 0.],
+                                      self.pose_value[2] if self.pose_value else None)
             if throttle == 0 and steer == 0:
-                await self.stop('manual_released')
+                await self.stop('manual_released', keep_armed=True)
                 return
             if self.mode != 'manual' or self.axes != (throttle, steer): self.generation += 1
             self.mode, self.axes = 'manual', (throttle, steer)
@@ -314,8 +338,12 @@ class NavigationService(Component):
                 raise ValueError('stop and wait for the chassis before changing drive mode')
             await self.stop('drive_mode_changed')
             self.drive_mode = mode
+            self.parameters = TowingParameters(**self.config.get('profiles', {}).get(mode, asdict(self.parameters)))
             self.navigator = self.new_navigator()
             self.bridge.drive_mode = mode
+            if self.simulated:
+                from ...components.vehicle import drive_model
+                self.bridge.model = drive_model(self.parameters, mode)
         elif op == 'footprint':
             await self.stop('footprint_changed', cancel=True)
             extended = request.get('extended')
@@ -393,7 +421,7 @@ class NavigationService(Component):
         if self.speed_limits['handles'] and handle['fresh'] and len(data) >= 2:
             if data[0]: speed = min(speed * .3, .3)
             elif data[1] and self.mode == 'navigation': speed = max(speed * 2., speed + .4)
-        return min(self.parameters.max_linear, speed), self.speed_limits['angular']
+        return min(self.parameters.max_linear, speed), min(self.parameters.max_angular, self.speed_limits['angular'])
 
     async def tick(self):
         started = time.monotonic()
@@ -426,8 +454,10 @@ class NavigationService(Component):
             generation = self.generation
             cruise = self.cruise_limits()
             self.navigator.local.cruise_limits = cruise
-            manual = self.navigator.model.targets(self.axes[0] * cruise[0] / capped.max_linear,
-                                                  self.axes[1] * cruise[1] / capped.max_angular) if self.mode == 'manual' else None
+            from .settings import defaults
+            axis_modes = self.config.get('manual', defaults({})['manual'])[self.drive_mode]
+            manual = self.manual_control.target(self.measured or [0., 0.],
+                       self.pose_value[2] if self.pose_value else 0., self.navigator.model, axis_modes, cruise) if self.mode == 'manual' else None
             try:
                 if self.workers:
                     result, state, measured, dynamic = await self.workers.compute(self, manual)
@@ -493,6 +523,9 @@ class NavigationService(Component):
                       control_owned=bool(self.lease and time.monotonic() < self.lease_deadline),
                       hardware=hardware)
         result.update(speed_limits=self.speed_limits, pedal=self.pedal, maintenance=self.maintenance)
+        result['manual_control'] = dict(brake_locked=self.manual_control.brake_locked,
+                                      steering_angle=self.manual_control.steering_angle,
+                                      axes=self.config.get('manual', {}).get(self.drive_mode))
         if not compact:
             result.update(footprint=asdict(self.footprint), vehicle=asdict(self.parameters),
                           telemetry=self.telemetry(),

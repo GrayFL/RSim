@@ -24,6 +24,8 @@ class TowingParameters:
     max_angular: float = .8
     linear_acceleration: float = .6
     angular_acceleration: float = .8
+    linear_deceleration: float = 1.2
+    angular_deceleration: float = 1.6
     linear_friction: float = .05
     linear_drag: float = .15
     angular_friction: float = .08
@@ -32,12 +34,20 @@ class TowingParameters:
     rear_extent: float = .81
     rear_lateral_speed: float = .12
     max_loop_gap: float = .3
+    wheelbase: float = .45
+    steering_max_deg: float = 35.
+    steering_rate: float = .8
+    steering_acceleration: float = 1.6
+    steering_deceleration: float = 2.
+    heading_max_deg: float = 90.
 
     def __post_init__(self):
-        if any(not math.isfinite(v) or v <= 0 for v in asdict(self).values()):
+        if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in asdict(self).values()):
             raise ValueError('drive parameters must be finite and positive')
         if self.max_linear > 1.6:
             raise ValueError('chassis speed cannot exceed 1.6 m/s')
+        if self.max_angular > .8 or self.steering_max_deg >= 85 or self.heading_max_deg > 180 or not .1 <= self.max_loop_gap <= .5:
+            raise ValueError('invalid angular or steering limit')
         if self.linear_acceleration <= self.linear_friction or self.angular_acceleration <= self.angular_friction:
             raise ValueError('drive effort must exceed static friction')
 
@@ -51,7 +61,7 @@ class TowingParameters:
 
 
 class TowingDynamics:
-    """Force/drag dynamics with forward-only, non-pivot towing constraints.
+    """Force/drag dynamics with signed travel and non-pivot towing constraints.
 
     Targets are desired velocities. A bounded drive force tracks each target;
     Coulomb and quadratic resistance reduce acceleration at higher speed. This
@@ -64,16 +74,14 @@ class TowingDynamics:
     def yaw_limit(self, speed):
         import numpy as np
         p = self.parameters
-        return np.minimum(np.maximum(speed, 0) / p.min_turn_radius,
+        return np.minimum(np.abs(speed) / p.min_turn_radius,
                           min(p.max_angular, p.rear_lateral_speed / p.rear_extent))
 
     def targets(self, throttle, steering):
         if not all(math.isfinite(v) and -1 <= v <= 1 for v in (throttle, steering)):
             raise ValueError('manual axes must be finite and in [-1, 1]')
-        if throttle < 0:
-            raise ValueError('reverse is disabled for towing')
         speed = throttle * self.parameters.max_linear
-        return VelocityCommand(speed, steering * float(self.yaw_limit(speed)))
+        return VelocityCommand(speed, steering * math.copysign(float(self.yaw_limit(speed)), speed))
 
     def advance_velocity(self, current, target, dt):
         """Vectorized [v,w] transition, also used for the braking tail."""
@@ -84,32 +92,39 @@ class TowingDynamics:
         current, target = np.asarray(current, float), np.asarray(target, float)
         if not np.isfinite(current).all() or not np.isfinite(target).all():
             raise ValueError('velocity must be finite')
-        goal_v = np.clip(target[..., 0], 0 if self.mode == 'towing' else -p.max_linear, p.max_linear)
+        goal_v = np.clip(target[..., 0], -p.max_linear, p.max_linear)
         goal_w = np.clip(target[..., 1], -self.yaw_limit(goal_v), self.yaw_limit(goal_v))
-        v = self._axis(current[..., 0], goal_v, dt, p.linear_acceleration, p.linear_friction, p.linear_drag)
-        w = self._axis(current[..., 1], goal_w, dt, p.angular_acceleration, p.angular_friction, p.angular_drag)
+        v = self._axis(current[..., 0], goal_v, dt, p.linear_acceleration, p.linear_friction, p.linear_drag, p.linear_deceleration)
+        w = self._axis(current[..., 1], goal_w, dt, p.angular_acceleration, p.angular_friction, p.angular_drag, p.angular_deceleration)
         # Retain forward travel until yaw has decelerated: never turn a braking
         # trajectory into an unmodelled pivot by independently clipping v to zero.
         if self.mode == 'towing':
-            v = np.maximum(v, np.abs(w) * p.min_turn_radius)
+            direction = np.where(abs(v) > 1e-10, np.sign(v), np.sign(current[..., 0]))
+            v = direction * np.maximum(abs(v), np.abs(w) * p.min_turn_radius)
         w = np.clip(w, -self.yaw_limit(v), self.yaw_limit(v))
         return np.stack((v, w), axis=-1)
 
     @staticmethod
-    def _axis(current, target, dt, acceleration, friction, drag):
+    def _axis(current, target, dt, acceleration, friction, drag, deceleration=None):
         import numpy as np
         value, target = np.broadcast_arrays(np.asarray(current, float), np.asarray(target, float))
         value = value.copy()
+        deceleration = acceleration if deceleration is None else deceleration
         # Mid-step sign changes must not turn friction into an oscillating force.
         count = max(1, math.ceil(dt / .02))
         h = dt / count
         for _ in range(count):
             error = target - value
+            braking = value * error < 0
             sign = np.where(abs(value) > 1e-10, np.sign(value), np.sign(error))
             resistance = sign * (friction + drag * value ** 2)
-            drive = np.clip(error / h + resistance, -acceleration, acceleration)
-            net = np.clip(drive - resistance, -acceleration, acceleration)
+            limit = np.where(braking, deceleration, acceleration)
+            drive = np.clip(error / h + resistance, -limit, limit)
+            net = np.clip(drive - resistance, -limit, limit)
+            net = np.where((abs(value) < 1e-10) & (net * error < 0), 0., net)
             updated = value + net * h
+            # A reverse target brakes to zero before accelerating in reverse.
+            updated = np.where(value * updated < 0, 0., updated)
             # Do not overshoot the requested velocity or reverse through zero
             # when braking. Maintaining a target supplies only its resistance.
             value = np.where(error * (target - updated) <= 0, target, updated)

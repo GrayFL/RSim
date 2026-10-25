@@ -80,7 +80,7 @@ def test_native_gate_differential_mode_and_hard_cap():
     for seq, (v, w, mode, accepted) in enumerate([
         (0, .5, 'differential', True), (-1., .1, 'differential', True),
         (1.6, 0, 'differential', True), (1.601, 0, 'differential', False),
-        (0, .5, 'towing', False), (-.1, 0, 'towing', False),
+        (0, .5, 'towing', False), (-.1, 0, 'towing', True),
         (.3, .1, 'towing', True), (0, 0, 'unknown', False)
     ], 1):
         gate.update(dict(base, sequence=seq, linear_x=v, angular_z=w, drive_mode=mode), now)

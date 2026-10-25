@@ -12,21 +12,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True, type=Path)
     parser.add_argument('--simulate', action='store_true', help='ROS-free simulation; no ROS topics are opened')
-    parser.add_argument('--enable-motion', action='store_true', help='permit subsequent explicit browser arming')
-    parser.add_argument('--host', default='127.0.0.1')
-    parser.add_argument('--port', default=18780, type=int)
+    parser.add_argument('--enable-motion', action='store_true', default=None, help='override saved motion permission for this launch')
+    parser.add_argument('--host')
+    parser.add_argument('--port', type=int)
     parser.add_argument('--data-dir', type=Path, default=Path('assets/navigation'))
     auth = parser.add_mutually_exclusive_group()
     auth.add_argument('--token-file', type=Path)
-    auth.add_argument('--no-auth', action='store_true', help='serve the web UI and API without a control token')
+    auth.add_argument('--no-auth', action='store_true', default=None, help='serve the web UI and API without a control token')
     parser.add_argument('--ssl-certfile')
     parser.add_argument('--ssl-keyfile')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     config = json.loads(args.config.read_text(encoding='utf8'))
     args.data_dir.mkdir(parents=True, exist_ok=True)
-    speed_file = args.data_dir/'speed-settings.json'
-    if speed_file.exists(): config['speed_limits'] = json.loads(speed_file.read_text(encoding='utf8'))
+    from .settings import SettingsStore, apply_config
+    settings = SettingsStore(args.data_dir / 'settings.json', config)
+    if args.enable_motion is not None:
+        settings.active['permissions']['motion'] = args.enable_motion
+    apply_config(config, settings.active)
+    web = config.get('web', {})
+    args.host = args.host or web.get('host', '127.0.0.1')
+    args.port = args.port or web.get('port', 18780)
+    args.no_auth = args.no_auth if args.no_auth is not None else web.get('no_auth', False)
+    motion_enabled = config['enable_motion']
     token_path = args.token_file or args.data_dir / 'control.token'
     token = None
     if not args.no_auth:
@@ -49,7 +57,7 @@ def main():
         config['ros']['drive_mode'] = config.get('drive_mode', 'towing')
         for key in ('min_turn_radius', 'rear_extent', 'rear_lateral_speed'):
             config['ros'][key] = getattr(parameters, key)
-        bridge = LocalROS1Bridge(config['ros'], motion_enabled=args.enable_motion, **config.get('relay', {}))
+        bridge = LocalROS1Bridge(config['ros'], motion_enabled=motion_enabled, **config.get('relay', {}))
     from ...runtime.sharing import SharedProvider
     from ...runtime.deployment import ProcessPlacement
     from ...runtime.options import RuntimeOptions, RuntimePaths
@@ -64,9 +72,10 @@ def main():
     service = NavigationClient(provider, config, simulated=args.simulate,
                                motion_enabled=bridge.motion_enabled)
     app = create_app(service, token, data_dir=args.data_dir,
-                     allowed_hosts=config.get('allowed_hosts', ['localhost', '127.0.0.1']), runtime_options=runtime_options)
+                     allowed_hosts=config.get('allowed_hosts', ['localhost', '127.0.0.1']), runtime_options=runtime_options,
+                     settings_store=settings)
     logging.info('Authentication: %s; motion: %s', 'disabled' if args.no_auth else str(token_path.resolve()),
-                 'simulation' if args.simulate else 'operator arm required' if args.enable_motion else 'ZERO ONLY')
+                 'simulation' if args.simulate else 'operator arm required' if motion_enabled else 'ZERO ONLY')
     import uvicorn
     from threadpoolctl import threadpool_limits
     with threadpool_limits(limits=1):
