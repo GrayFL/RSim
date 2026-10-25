@@ -1,0 +1,148 @@
+{
+  "relay": {
+    "directory": "/dev/shm/rsim-ros1",
+    "python": "/usr/bin/python2",
+    "setup": [
+      "/opt/ros/melodic/setup.bash"
+    ]
+  },
+  "ros": {
+    "master_uri": "http://127.0.0.1:11311",
+    "ros_ip": "127.0.0.1",
+    "map_frame": "map",
+    "base_frame": "base_footprint",
+    "max_linear": 1.6,
+    "max_angular": 0.8,
+    "command_topic": "/cmd_vel/smoother_sub",
+    "monitor_topic": "/rsim/cmd_vel",
+    "initialpose_topic": "/initialpose",
+    "allow_localization": false,
+    "required_fresh": [
+      "scan",
+      "odom",
+      "raw_odom"
+    ],
+    "require_bumper_initial": false,
+    "topics": {
+      "map": {
+        "topic": "/map",
+        "type": "nav_msgs/OccupancyGrid",
+        "hz": 1
+      },
+      "scan": {
+        "topic": "/scan",
+        "type": "sensor_msgs/LaserScan",
+        "hz": 15
+      },
+      "scan_top": {
+        "topic": "/front_top_depth_camera/depth_scan",
+        "type": "sensor_msgs/LaserScan",
+        "hz": 8
+      },
+      "scan_bottom": {
+        "topic": "/front_bottom_sensor/ground_filter/depth_scan",
+        "type": "sensor_msgs/LaserScan",
+        "hz": 8
+      },
+      "odom": {
+        "topic": "/odom_imu",
+        "type": "nav_msgs/Odometry",
+        "hz": 20
+      },
+      "raw_odom": {
+        "topic": "/odom_raw",
+        "type": "nav_msgs/Odometry",
+        "hz": 15
+      },
+      "imu": {
+        "topic": "/imu_data",
+        "type": "sensor_msgs/Imu",
+        "hz": 20
+      },
+      "estop": {
+        "topic": "/stm32_driver/estop",
+        "type": "std_msgs/Bool",
+        "hz": 15
+      },
+      "bumper": {
+        "topic": "/stm32_driver/bumper",
+        "type": "std_msgs/Bool",
+        "hz": 15
+      },
+      "scheduler": {
+        "topic": "/task_executor/tsm_state",
+        "type": "std_msgs/String",
+        "hz": 5
+      },
+      "battery": {
+        "topic": "/stm32_driver/battery/battery_state",
+        "type": "robint_msgs/BatteryState",
+        "hz": 1
+      },
+      "handles": {
+        "topic": "/stm32_driver/handle_status",
+        "type": "std_msgs/UInt8MultiArray",
+        "hz": 5
+      },
+      "mapping": {
+        "topic": "/task_executor/mapping_status",
+        "type": "robint_msgs/MappingState",
+        "hz": 1
+      }
+    },
+    "drive_mode": "towing"
+  },
+  "vehicle": {
+    "max_linear": 1.6,
+    "max_angular": 0.8,
+    "linear_acceleration": 0.6,
+    "angular_acceleration": 0.8,
+    "min_turn_radius": 0.3,
+    "rear_extent": 0.81,
+    "rear_lateral_speed": 0.12,
+    "linear_friction": 0.05,
+    "linear_drag": 0.15,
+    "angular_friction": 0.08,
+    "angular_drag": 0.7
+  },
+  "footprint": {
+    "front": 0.27,
+    "rear": 0.81,
+    "width": 0.54,
+    "margin": 0.1
+  },
+  "planner": "rrt",
+  "required_scans": [
+    "scan"
+  ],
+  "optional_scans": [
+    "scan_top",
+    "scan_bottom"
+  ],
+  "max_compute_ms": 220,
+  "allow_mapping": false,
+  "allowed_hosts": [
+    "localhost",
+    "127.0.0.1"
+  ],
+  "drive_mode": "towing",
+  "catalog": {
+    "map_directory": "/home/robint01/robintros_ws/database/map",
+    "location_directory": "/home/robint01/robintros_ws/database/location",
+    "vendor_url": "http://127.0.0.1:8088",
+    "vendor_token_config": "/home/robint01/robintros_ws/install/lib/http_server/config.py"
+  },
+  "allow_pedal": false,
+  "allow_audio": false,
+  "pedal_can": "can1",
+  "speed_limits": {
+    "navigation": 1.0,
+    "manual": 1.0,
+    "angular": 0.8,
+    "handles": true
+  },
+  "voice": {
+    "directory": "/root/DataBags/zbz/onboard_nav",
+    "python": "/usr/bin/python3"
+  }
+}

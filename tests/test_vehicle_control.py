@@ -29,7 +29,7 @@ def test_terminal_speed_friction_reversal_and_pivot():
     model.reset()
     advance(model, "a", 8)
     assert model.linear == 0 and model.angular == pytest.approx(
-        p.terminal_yaw_rate, rel=0.001
+        min(p.terminal_yaw_rate, p.pivot_rate), rel=0.001
     )
     advance(model, "", 4)
     assert model.angular == 0

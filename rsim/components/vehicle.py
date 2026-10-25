@@ -12,6 +12,136 @@ from rsim.core.commands import VelocityCommand
 
 
 @dataclass(frozen=True)
+class TowingParameters:
+    """Chassis dynamics in SI units, shared by both driving modes.
+
+    Acceleration is a bound on drive effort per unit mass and on net braking.
+    Drag/friction act before the 1.6 m/s chassis cap. The unconstrained drive
+    equilibrium is deliberately higher than the cap, so full input reaches it.
+    rear_extent describes the towing attachment/person, not the pedal state.
+    """
+    max_linear: float = 1.6
+    max_angular: float = .8
+    linear_acceleration: float = .6
+    angular_acceleration: float = .8
+    linear_friction: float = .05
+    linear_drag: float = .15
+    angular_friction: float = .08
+    angular_drag: float = .7
+    min_turn_radius: float = .3
+    rear_extent: float = .81
+    rear_lateral_speed: float = .12
+    max_loop_gap: float = .3
+
+    def __post_init__(self):
+        if any(not math.isfinite(v) or v <= 0 for v in asdict(self).values()):
+            raise ValueError('drive parameters must be finite and positive')
+        if self.max_linear > 1.6:
+            raise ValueError('chassis speed cannot exceed 1.6 m/s')
+        if self.linear_acceleration <= self.linear_friction or self.angular_acceleration <= self.angular_friction:
+            raise ValueError('drive effort must exceed static friction')
+
+    @property
+    def terminal_speed(self):
+        return math.sqrt((self.linear_acceleration - self.linear_friction) / self.linear_drag)
+
+    @property
+    def terminal_yaw_rate(self):
+        return math.sqrt((self.angular_acceleration - self.angular_friction) / self.angular_drag)
+
+
+class TowingDynamics:
+    """Force/drag dynamics with forward-only, non-pivot towing constraints.
+
+    Targets are desired velocities. A bounded drive force tracks each target;
+    Coulomb and quadratic resistance reduce acceleration at higher speed. This
+    same transition is used for commands, prediction, simulation and braking.
+    """
+    mode = 'towing'
+    def __init__(self, parameters=None):
+        self.parameters = parameters or TowingParameters()
+
+    def yaw_limit(self, speed):
+        import numpy as np
+        p = self.parameters
+        return np.minimum(np.maximum(speed, 0) / p.min_turn_radius,
+                          min(p.max_angular, p.rear_lateral_speed / p.rear_extent))
+
+    def targets(self, throttle, steering):
+        if not all(math.isfinite(v) and -1 <= v <= 1 for v in (throttle, steering)):
+            raise ValueError('manual axes must be finite and in [-1, 1]')
+        if throttle < 0:
+            raise ValueError('reverse is disabled for towing')
+        speed = throttle * self.parameters.max_linear
+        return VelocityCommand(speed, steering * float(self.yaw_limit(speed)))
+
+    def advance_velocity(self, current, target, dt):
+        """Vectorized [v,w] transition, also used for the braking tail."""
+        import numpy as np
+        p = self.parameters
+        if not math.isfinite(dt) or not 0 < dt <= p.max_loop_gap:
+            raise ValueError('invalid or stalled control interval')
+        current, target = np.asarray(current, float), np.asarray(target, float)
+        if not np.isfinite(current).all() or not np.isfinite(target).all():
+            raise ValueError('velocity must be finite')
+        goal_v = np.clip(target[..., 0], 0 if self.mode == 'towing' else -p.max_linear, p.max_linear)
+        goal_w = np.clip(target[..., 1], -self.yaw_limit(goal_v), self.yaw_limit(goal_v))
+        v = self._axis(current[..., 0], goal_v, dt, p.linear_acceleration, p.linear_friction, p.linear_drag)
+        w = self._axis(current[..., 1], goal_w, dt, p.angular_acceleration, p.angular_friction, p.angular_drag)
+        # Retain forward travel until yaw has decelerated: never turn a braking
+        # trajectory into an unmodelled pivot by independently clipping v to zero.
+        if self.mode == 'towing':
+            v = np.maximum(v, np.abs(w) * p.min_turn_radius)
+        w = np.clip(w, -self.yaw_limit(v), self.yaw_limit(v))
+        return np.stack((v, w), axis=-1)
+
+    @staticmethod
+    def _axis(current, target, dt, acceleration, friction, drag):
+        import numpy as np
+        value, target = np.broadcast_arrays(np.asarray(current, float), np.asarray(target, float))
+        value = value.copy()
+        # Mid-step sign changes must not turn friction into an oscillating force.
+        count = max(1, math.ceil(dt / .02))
+        h = dt / count
+        for _ in range(count):
+            error = target - value
+            sign = np.where(abs(value) > 1e-10, np.sign(value), np.sign(error))
+            resistance = sign * (friction + drag * value ** 2)
+            drive = np.clip(error / h + resistance, -acceleration, acceleration)
+            net = np.clip(drive - resistance, -acceleration, acceleration)
+            updated = value + net * h
+            # Do not overshoot the requested velocity or reverse through zero
+            # when braking. Maintaining a target supplies only its resistance.
+            value = np.where(error * (target - updated) <= 0, target, updated)
+        return value
+
+    def step(self, measured, target, dt):
+        result = self.advance_velocity([measured.linear_x, measured.angular_z],
+                                       [target.linear_x, target.angular_z], dt)
+        return VelocityCommand(*map(float, result))
+
+
+class DifferentialDynamics(TowingDynamics):
+    """The same force model with signed travel and independent pivot turns."""
+    mode = 'differential'
+
+    def yaw_limit(self, speed):
+        import numpy as np
+        return np.full_like(np.asarray(speed, float), self.parameters.max_angular)
+
+    def targets(self, throttle, steering):
+        if not all(math.isfinite(v) and -1 <= v <= 1 for v in (throttle, steering)):
+            raise ValueError('manual axes must be finite and in [-1, 1]')
+        return VelocityCommand(throttle * self.parameters.max_linear, steering * self.parameters.max_angular)
+
+
+def drive_model(parameters=None, mode='towing'):
+    if mode == 'towing': return TowingDynamics(parameters)
+    if mode == 'differential': return DifferentialDynamics(parameters)
+    raise ValueError('drive mode must be towing or differential')
+
+
+@dataclass(frozen=True)
 class VehicleParameters:
     acceleration: float = 0.4
     friction: float = 0.06

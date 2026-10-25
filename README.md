@@ -88,6 +88,8 @@ async with Runtime(snapshot.output):
 
 HiPNUC IMU 支持 Python 串口直读与 ROS2 节点两种模式，均通过 `.imu.get()` 返回数据，见 [IMU 接入](docs/imu.md)。`load_rig()` 可读取 YAML 初始化设备、复用嵌套组合中的同一个传感器，并用 graphmap Pose 表示安装外参，见 [配置与组装](docs/configuration.md)。
 
+在 ROS1 设备本机运行时，可用 `LocalROS1Bridge` 管理系统 Python 2 节点，经原子共享文件连接现代 RSim。新增独立牵引导航、避障和网页遥控共用前进车辆模型，支持踏板外形、低带宽和 ROS-free 仿真；默认保持零速。配置、API 和验证见 [本地 ROS1 桥接与牵引导航](docs/ros1-local-navigation.md)。
+
 BlueSea 2D 雷达可通过 `rsim.drivers.BlueSea` 启动外部 ROS2 驱动，同机应用用 `rsim.devices.BlueSea` 连接。跨主机读取已有 ROS2 IMU、扫描、里程计或诊断话题时，在应用主机启动 `rsim.drivers.ROS2Topic` 中继，再用 `rsim.devices.ROS2Topic` 读取；命令与示例见 [驱动参数说明](docs/drivers.md#底盘串口传感器与跨主机读取)。
 
 `PlanarOdometry` 融合轮式 odom 与 IMU 角速度，输出 `graphmap.pose.Pose`；`ChassisController` 提供 `await move(distance_m)`、`await rotate(yaw_deg=... / yaw_rad=...)` 和 `await stop()`。运动默认关闭，详见 [位姿融合与底盘控制](docs/motion.md)。

@@ -19,9 +19,13 @@ dds = ["cyclonedds>=0.10.5"]
 test = ["pytest>=8", "psutil>=5.9"]
 teleop = ["pynput>=1.7", "pygame>=2.5", "python-xlib>=0.33; sys_platform == 'linux'", "PyYAML>=6", "graphmap>=0.1.0", "cyclonedds>=0.10.5", "threadpoolctl>=3"]
 notebook = ["ipywidgets>=8"]
+navigation = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "Pillow>=10", "scipy>=1.17", "threadpoolctl>=3", "graphmap>=0.1.0"]
 
 [tool.setuptools.packages.find]
 include = ["rsim*"]
+
+[tool.setuptools.package-data]
+"rsim.apps.navigation" = ["static/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
