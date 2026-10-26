@@ -75,7 +75,7 @@ class PortExporter(Component):
 
     async def open(self):
         self.publisher = self.dependencies[0].publisher(self.channel.topic)
-        self.task("export", self.export, hz=500)
+        self.task("export", self.export, hz=None)
         self.task("announce", self.announce, hz=20)
 
     async def export(self):
@@ -103,18 +103,25 @@ class PortImporter(PrimaryComponent):
         self.previous = 0
         self.subscription = None
         self.queue_drops = self.evicted_descriptors = 0
+        self.wake = asyncio.Event()
 
     def _enqueue(self, descriptor):
         if len(self.pending) == self.pending.maxlen:
             self.queue_drops += 1
         self.pending.append(descriptor)
+        self.wake.set()
 
     async def open(self):
         self.pending.clear()
         self.previous = 0
         self.queue_drops = self.evicted_descriptors = 0
         self.subscription = self.dependencies[0].subscribe(self.channel.topic, self._enqueue)
-        self.task("import", self.receive, hz=500)
+        self.task("import", self.receive_when_ready, hz=None)
+
+    async def receive_when_ready(self):
+        await self.wake.wait()
+        self.wake.clear()
+        await self.receive()
 
     async def receive(self):
         while self.pending:

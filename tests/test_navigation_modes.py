@@ -92,7 +92,9 @@ def test_manual_preempts_navigation_resume_and_late_goals():
             assert service.mode == 'manual'
             await send(4, 'resume')
             assert service.mode == 'manual' and service.manual_active()
-            await send(5, 'manual', throttle=0, steering=0)
+            await send(5, 'manual', throttle=0, steering=0, input_active=False)
+            assert service.mode == 'manual'  # neutral finishes through dynamics
+            await service.tick()  # this unarmed preview is already stationary
             assert service.mode == 'paused' and np.allclose(service.goal, [0, 1, 1])
             # Geometry and kinematics are separate and support all combinations.
             for n, rear in [(6, False), (8, True)]:
@@ -172,6 +174,8 @@ def test_old_navigation_error_does_not_disarm_new_manual_generation():
             assert service.armed and service.mode == 'manual'
             assert service.last_stop['reason'] == 'new_controller'
             # An error from the current manual generation must still stop it.
+            def current_error(*args): raise ValueError('planner_input_expired')
+            service.compute = current_error
             await service.state.get(after=service.state.frames[-1].sequence, timeout=2)
             assert not service.armed and service.last_stop['reason'] == 'planner_input_expired'
     asyncio.run(run())

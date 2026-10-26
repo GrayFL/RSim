@@ -105,6 +105,16 @@ class TowingDynamics:
         return np.stack((v, w), axis=-1)
 
     @staticmethod
+    def coast_axis(current, dt, friction, drag, deceleration):
+        """Zero drive effort: resistance slows the axis without reversing it."""
+        speed = float(current)
+        count = max(1, math.ceil(dt / .02))
+        for _ in range(count):
+            loss = min(deceleration, friction + drag * speed ** 2) * dt / count
+            speed = math.copysign(max(0., abs(speed) - loss), speed)
+        return speed
+
+    @staticmethod
     def _axis(current, target, dt, acceleration, friction, drag, deceleration=None):
         import numpy as np
         value, target = np.broadcast_arrays(np.asarray(current, float), np.asarray(target, float))
@@ -113,6 +123,26 @@ class TowingDynamics:
         # Mid-step sign changes must not turn friction into an oscillating force.
         count = max(1, math.ceil(dt / .02))
         h = dt / count
+        if value.size == 1:
+            # Manual driving evaluates one candidate. Tiny NumPy operations in
+            # every 20 ms substep cost more than the scalar physics itself.
+            # Keep the same sign, braking, friction and overshoot rules.
+            speed, goal = float(value.item()), float(target.item())
+            for _ in range(count):
+                error = goal - speed
+                limit = deceleration if speed * error < 0 else acceleration
+                sign = (1. if speed > 0 else -1.) if abs(speed) > 1e-10 else (1. if error > 0 else -1. if error < 0 else 0.)
+                resistance = sign * (friction + drag * speed ** 2)
+                drive = max(-limit, min(limit, error / h + resistance))
+                net = drive - resistance
+                net_limit = deceleration if speed * net < 0 else acceleration
+                net = max(-net_limit, min(net_limit, net))
+                if abs(speed) < 1e-10 and net * error < 0: net = 0.
+                updated = speed + net * h
+                if speed * updated < 0: updated = 0.
+                speed = goal if error * (goal - updated) <= 0 else updated
+            value[...] = speed
+            return value
         for _ in range(count):
             error = target - value
             braking = value * error < 0
@@ -120,7 +150,9 @@ class TowingDynamics:
             resistance = sign * (friction + drag * value ** 2)
             limit = np.where(braking, deceleration, acceleration)
             drive = np.clip(error / h + resistance, -limit, limit)
-            net = np.clip(drive - resistance, -limit, limit)
+            net = drive - resistance
+            net_limit = np.where(value * net < 0, deceleration, acceleration)
+            net = np.clip(net, -net_limit, net_limit)
             net = np.where((abs(value) < 1e-10) & (net * error < 0), 0., net)
             updated = value + net * h
             # A reverse target brakes to zero before accelerating in reverse.

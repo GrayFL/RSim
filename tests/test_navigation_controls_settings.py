@@ -121,3 +121,22 @@ def test_settings_api_stages_permissions_applies_keys_and_preserves_on_reopen(tm
         restart=client.post('/api/service/restart', json=dict(lease=lease, sequence=2, deadline_ms=time.monotonic()*1000+1500))
         assert restart.status_code == 409  # a test server cannot kill its host
     assert SettingsStore(tmp_path/'settings.json', {}).values['permissions']['motion'] is True
+
+
+def test_legacy_settings_migrate_ownership_but_stale_browser_must_reload(tmp_path):
+    import json
+    values = defaults({}); values.pop('control_mode')
+    for axes in values['manual'].values(): axes.pop('release_mode')
+    path = tmp_path/'settings.json'
+    path.write_text(json.dumps(dict(schema=1, revision=9, values=values)))
+    store = SettingsStore(path, {})
+    assert store.values['control_mode'] == 'exclusive' and store.revision == 9
+    assert all(axes['release_mode'] == 'coast' for axes in store.values['manual'].values())
+    with pytest.raises(ValueError, match='fields'): store.check(values, 9)
+    current = deepcopy(store.values); current['control_mode'] = 'shared'
+    current['manual']['differential']['release_mode'] = 'target_zero'
+    store.save(current, 9)
+    assert store.active['control_mode'] == 'shared' and not store.view()['restart_required']
+    assert SettingsStore(path, {}).active['manual']['differential']['release_mode'] == 'target_zero'
+    current['manual']['differential']['release_mode'] = 'invalid'
+    with pytest.raises(ValueError, match='release mode'): store.check(current, 10)

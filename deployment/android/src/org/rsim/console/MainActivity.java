@@ -28,6 +28,7 @@ public final class MainActivity extends Activity {
                     .setIcon(Icon.createWithResource(this, getApplicationInfo().icon))
                     .setIntent(launch).build();
                 manager.requestPinShortcut(shortcut, null);
+                finish();
             } else status.setText("请从应用列表将 RSim 控制台拖到桌面。");
             return;
         }

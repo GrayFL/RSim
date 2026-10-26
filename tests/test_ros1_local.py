@@ -103,3 +103,21 @@ def test_hardware_health_does_not_veto_for_oem_navigation_state():
     assert relay.health(now) == 'ok'
     relay.output_publishers = ['/twist_mux']
     assert relay.health(now) == 'output_publisher_conflict'
+    relay.config['allowed_output_publishers'] = ['/twist_mux']
+    assert relay.health(now) == 'ok'
+    # This deployment deliberately tolerates mux output, not arbitrary writers.
+    relay.output_publishers.append('/unexpected_controller')
+    assert relay.health(now) == 'output_publisher_conflict'
+
+
+def test_native_gate_accepts_measured_short_body_only_when_configured():
+    Gate = gate_module().VelocityGate; now = 10**12
+    packet = dict(session='s', sequence=1, controller_epoch='e', deadline_ns=now+250000000,
+                  linear_x=0., angular_z=.2, drive_mode='differential', armed=True, footprint_rear=.25)
+    old = Gate('s', enabled=True); old.update(packet, now)
+    assert old.reason == 'invalid_command'
+    gate = Gate('s', enabled=True, min_footprint_rear=.25); gate.update(packet, now)
+    assert gate.output(now, 'ok', (1.6, .8))[0] == (0., .2)
+    assert gate.output(now, 'pedal_footprint_mismatch', (1.6, .8))[0] == (0., 0.)
+    gate.update(dict(packet, sequence=2, footprint_rear=.249), now)
+    assert gate.reason == 'invalid_command'

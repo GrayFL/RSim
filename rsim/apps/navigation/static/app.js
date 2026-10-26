@@ -7,19 +7,21 @@ let controlReady=false,settingPending=false,controlLag=false;
 let clockSamples=[];
 let controlsConfig={keyboard:{forward:'KeyW',backward:'KeyS',left:'KeyA',right:'KeyD',stop:'Space'},touch_mode:'buttons',manual:{}};
 const touchKeys=new Map();
-let joystickPointer=null;
+let joystickPointer=null,manualSource='keys';
 function observeClock(clock){const now=performance.now();clockSamples=clockSamples.filter(p=>now-p.at<10000);clockSamples.push({at:now,offset:clock-now});if(clockSamples.length>80)clockSamples.shift();offset=Math.max(...clockSamples.map(p=>p.offset));}
-function controlButtons(){for(const id of ['goal','driveMode','extended','resume','saveSpeeds'])$(id).disabled=!controlReady||settingPending;$('arm').disabled=latest.zero_only!==false||!controlReady||settingPending;}
+function healthText(reason){return ({ok:'检查通过',output_publisher_conflict:'底盘入口存在其他发布者',output_ownership_unknown:'正在确认底盘输出来源',pedal_footprint_mismatch:'踏板外形正在更新',estop_or_unknown:'急停已按下或状态未知',bumper:'碰撞开关已触发',stale_transform:'定位数据过期',stale_scan:'激光数据过期',bridge_unavailable:'底盘桥接尚未连接',manual_deadman:'驾驶输入中断超过 250 ms',controller_disconnected:'控制连接中断',pedal_footprint_changed:'踏板外形发生变化',blocked:'制动范围内有障碍，保持停车',manual_limited:'自动停障正在限制速度',manual:'手动驾驶',manual_direct:'手动直接控制',navigating:'沿全局航点导航',approaching_blockage:'接近受阻位置，正在重新规划',waiting_obstacle:'等待障碍移开或可行路线',waiting_global_path:'正在计算全局路线',arrived:'已到达',hardware_interlock:'硬件反馈检查未通过',stale_status:'底盘状态传输超时',planning_deadline_missed:'规划超时，本周期保持零速',stop:'操作员停止',control_focus_lost:'驾驶页面失焦',new_controller:'另一页面取得独占控制权'})[reason]||reason||'等待检查';}
+function drivingHealth(){return latest.manual_collision_check===false&&latest.mode!=='navigation'?(latest.hardware?.hardware_health||latest.hardware?.health):latest.hardware?.health;}
+function controlButtons(){for(const id of ['goal','driveMode','extended','resume','saveSpeeds','manualCollision'])$(id).disabled=!controlReady||settingPending;$('extended').disabled=$('extended').disabled||!!latest.pedal?.automatic;$('claim').disabled=controlReady;$('arm').disabled=latest.zero_only!==false||!controlReady||settingPending||latest.armed===true||drivingHealth()!=='ok';}
 function notice(text){$('notification').textContent=text;}
 function controlNotice(result){
   if(result.error){
     controlLag=['heartbeat','manual'].includes(result.op)&&/deadline|expired/.test(result.error);
-    notice(controlLag?'控制消息延迟，等待有效输入。':result.error);return;
+    if(result.error==='control lease expired'){controlReady=false;clearManual();controlButtons();if(socket)socket.close();notice('控制权已过期或被其他页面接管，请重新取得控制权。');return;}notice(controlLag?'控制消息延迟，等待有效输入。':healthText(result.error));return;
   }
   if(!result.ok||!result.op)return;
   if(['heartbeat','manual'].includes(result.op)){if(controlLag){controlLag=false;notice('控制通道已恢复。');}return;}
   controlLag=false;
-  notice(({arm:'运动已使能',goal:'导航目标已接收',drive_mode:'运动模式已切换',speeds:'速度设置已保存',footprint:'碰撞外形已更新',stop:'已停止并解除使能',pause:'任务已暂停',resume:'任务已恢复',cancel:'任务已取消'})[result.op]||'操作已完成');
+  notice(({arm:'运动已使能',goal:'导航目标已接收',drive_mode:'运动模式已切换',speeds:'速度设置已保存',footprint:'碰撞外形已更新',manual_collision:'手动避障设置已更新，请重新使能',stop:'已停止并解除使能',pause:'任务已暂停',resume:'任务已恢复',cancel:'任务已取消'})[result.op]||'操作已完成');
 }
 async function api(path,body){
   const response=await fetch(path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});
@@ -31,17 +33,17 @@ async function api(path,body){
 function envelope(op,extra={}){return {op,lease,sequence:++seq,deadline_ms:performance.now()+offset+(['goal','footprint','drive_mode','speeds'].includes(op)?1600:400),...extra};}
 function clearManual(){held=null;keys.clear();touchKeys.clear();joystickPointer=null;document.querySelectorAll('.held').forEach(e=>e.classList.remove('held'));$('joyHandle').style.transform='translate(-50%,-50%)';}
 function send(op,extra={}){
-  if(['stop','pause','cancel'].includes(op))clearManual();
-  if(controlReady&&socket&&socket.readyState===WebSocket.OPEN&&socket.bufferedAmount<4096){if(['arm','drive_mode','footprint','speeds'].includes(op)){settingPending=true;controlButtons();}socket.send(JSON.stringify(envelope(op,extra)));return;}
-  if(['stop','pause','cancel'].includes(op))api('/api/control',{op}).catch(e=>notice(e.message));else notice('请先取得控制权');
+  if(['stop','pause','cancel','idle'].includes(op))clearManual();
+  if(controlReady&&socket&&socket.readyState===WebSocket.OPEN&&socket.bufferedAmount<4096){if(['arm','drive_mode','footprint','speeds','manual_collision'].includes(op)){settingPending=true;controlButtons();}socket.send(JSON.stringify(envelope(op,extra)));return;}
+  if(lease&&['stop','pause','cancel','idle'].includes(op))api('/api/control',envelope(op)).catch(e=>notice(e.message));else notice('请先取得控制权');
 }
 function stop(){send('stop');}
 $('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{await api('/api/session',{token:$('token').value});$('token').value='';$('login').close();await poll();await loadMaps();}catch(error){$('loginError').textContent=error.message;}});
 $('claim').onclick=async()=>{try{
   const result=await api('/api/claim',{});lease=result.lease;seq=0;clockSamples=[];observeClock(result.clock_ms);
   if(socket)socket.close();const channel=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws/control');socket=channel;
-  channel.onmessage=e=>{const result=JSON.parse(e.data);if(result.clock_ms)observeClock(result.clock_ms);if(['arm','drive_mode','footprint','speeds'].includes(result.op)){settingPending=false;controlButtons();}controlNotice(result);if(result.hello){controlReady=true;controlLag=false;controlButtons();send('heartbeat');$('leaseState').textContent='当前浏览器持有';notice('控制已连接。');}};
-  channel.onclose=()=>{if(socket!==channel)return;lease=null;controlReady=false;settingPending=false;controlButtons();clearManual();$('leaseState').textContent='连接已断开';notice('控制连接断开，机器人停止。');};
+  channel.onmessage=e=>{if(socket!==channel)return;const result=JSON.parse(e.data);if(result.clock_ms)observeClock(result.clock_ms);if(['arm','drive_mode','footprint','speeds','manual_collision'].includes(result.op)){settingPending=false;controlButtons();}controlNotice(result);if(result.hello){controlReady=true;controlLag=false;controlButtons();send('heartbeat');$('leaseState').textContent='当前浏览器持有';notice('控制已连接。');}};
+  channel.onclose=()=>{if(socket!==channel)return;const wasReady=controlReady;lease=null;controlReady=false;settingPending=false;controlButtons();clearManual();$('leaseState').textContent='连接已断开';if(wasReady)notice('控制连接已断开；本页面不再控制运动。');};
 }catch(e){notice(e.message);}};
 $('arm').onclick=()=>send('arm');$('stop').onclick=stop;
 for(const op of ['pause','resume','cancel'])$(op).onclick=()=>send(op);
@@ -52,40 +54,45 @@ function setGoal(p){staged=[p.x,p.y,p.yaw];for(const [id,k]of [['gx','x'],['gy',
 $('goal').onclick=()=>{if(!showingLive())return notice('请切回机器人当前地图后导航。');send('goal',goalValues());};
 $('localize').onclick=async()=>{if($('mapMode').value!=='localize')return notice('请先进入“校正机器人位置”模式，在地图上选取位置和朝向。');if(!showingLive())return notice('只能在当前地图校正位置。');try{await api('/api/localization',envelope('goal',goalValues()));notice('位置校正已提交');}catch(e){notice(e.message);}};
 $('extended').onchange=()=>send('footprint',{extended:$('extended').checked});
-$('driveMode').onchange=()=>{clearManual();send('drive_mode',{drive_mode:$('driveMode').value});};
+$('driveMode').onchange=()=>{clearManual();send('drive_mode',{drive_mode:$('driveMode').value});focusDriving();};
 $('scale').oninput=()=>{$('scaleText').textContent=$('scale').value+'%';};
 function axes(){
   const scale=Number($('scale').value)/100;
-  if(held)return {throttle:held.throttle*scale,steering:held.steering*scale};
+  if(held)return {throttle:held.throttle*scale,steering:held.steering*scale,input_source:'joystick',input_active:true};
   const active=new Set([...keys,...touchKeys.values()]);
-  return {throttle:(Number(active.has('forward'))-Number(active.has('backward')))*scale,steering:(Number(active.has('left'))-Number(active.has('right')))*scale};
+  return {throttle:(Number(active.has('forward'))-Number(active.has('backward')))*scale,steering:(Number(active.has('left'))-Number(active.has('right')))*scale,input_source:active.size?'keys':manualSource,input_active:active.size>0};
 }
 function manualHeld(){return held!==null||keys.size>0||touchKeys.size>0;}
-function sendAxes(){if(controlReady)send('manual',axes());}
+function sendAxes(){if(controlReady){const input=axes();manualSource=input.input_source;send('manual',input);}}
 document.querySelectorAll('.drive').forEach(button=>{
-  button.addEventListener('pointerdown',e=>{e.preventDefault();if(!controlReady||settingPending)return;button.setPointerCapture(e.pointerId);touchKeys.set(e.pointerId,button.dataset.action);button.classList.add('held');sendAxes();});
+  button.addEventListener('pointerdown',e=>{e.preventDefault();if(!controlReady||settingPending)return;focusDriving();button.setPointerCapture(e.pointerId);touchKeys.set(e.pointerId,button.dataset.action);button.classList.add('held');sendAxes();});
   for(const event of ['pointerup','pointercancel','lostpointercapture'])button.addEventListener(event,e=>{if(touchKeys.delete(e.pointerId)){button.classList.remove('held');sendAxes();}});
 });
-function editing(){return $('developer').open||document.activeElement.isContentEditable||['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName);}
+function editing(){const el=document.activeElement;return $('developer').open||el.isContentEditable||['SELECT','TEXTAREA'].includes(el.tagName)||(el.tagName==='INPUT'&&!['range','checkbox','button'].includes(el.type));}
+function focusDriving(){document.querySelector('.manual').focus({preventScroll:true});}
 document.addEventListener('keydown',e=>{if(editing()||e.ctrlKey||e.altKey||e.metaKey)return;const action=Object.keys(controlsConfig.keyboard).find(k=>controlsConfig.keyboard[k]===e.code);if(!action)return;e.preventDefault();if(e.repeat)return;if(action==='stop'){stop();return;}if(!controlReady||settingPending)return;keys.add(action);sendAxes();});
 document.addEventListener('keyup',e=>{const action=Object.keys(controlsConfig.keyboard).find(k=>controlsConfig.keyboard[k]===e.code);if(keys.delete(action)){e.preventDefault();sendAxes();}});
 const joystick=$('joystick');
 function joystickMove(e){const r=joystick.getBoundingClientRect(),x=Math.max(-1,Math.min(1,(e.clientX-r.left-r.width/2)/(r.width*.43))),y=Math.max(-1,Math.min(1,(r.top+r.height/2-e.clientY)/(r.height*.43)));held={throttle:Math.abs(y)<.08?0:y,steering:Math.abs(x)<.08?0:-x};$('joyHandle').style.transform=`translate(calc(-50% + ${x*r.width*.43}px),calc(-50% - ${y*r.height*.43}px))`;}
-joystick.addEventListener('pointerdown',e=>{e.preventDefault();if(!controlReady||settingPending||joystickPointer!==null)return;joystickPointer=e.pointerId;joystick.setPointerCapture(e.pointerId);joystickMove(e);sendAxes();});
+joystick.addEventListener('pointerdown',e=>{e.preventDefault();if(!controlReady||settingPending||joystickPointer!==null)return;focusDriving();joystickPointer=e.pointerId;joystick.setPointerCapture(e.pointerId);joystickMove(e);sendAxes();});
 joystick.addEventListener('pointermove',e=>{if(e.pointerId===joystickPointer)joystickMove(e);});
 for(const event of ['pointerup','pointercancel','lostpointercapture'])joystick.addEventListener(event,e=>{if(e.pointerId===joystickPointer){held=null;joystickPointer=null;$('joyHandle').style.transform='translate(-50%,-50%)';sendAxes();}});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){stop();if(socket)socket.close();}});
-window.addEventListener('blur',()=>{clearManual();stop();});
-window.addEventListener('pagehide',()=>{navigator.sendBeacon('/api/control',new Blob([JSON.stringify({op:'stop'})],{type:'application/json'}));if(socket)socket.close();});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&controlReady){send('idle');if(socket)socket.close();}});
+window.addEventListener('blur',()=>{clearManual();if(controlReady)send('idle');});
+window.addEventListener('pagehide',()=>{if(!controlReady)return;navigator.sendBeacon('/api/control',new Blob([JSON.stringify(envelope('idle'))],{type:'application/json'}));if(socket)socket.close();});
 setInterval(()=>{if(!lease||settingPending||document.hidden||!socket||socket.readyState!==WebSocket.OPEN)return;const now=performance.now();if(manualHeld()){send('manual',axes());lastPing=now;}else if(now-lastPing>200){send('heartbeat');lastPing=now;}},80);
 async function poll(){if(pollBusy||document.hidden)return;pollBusy=true;try{
   latest=await api('/api/status');$('dot').className=latest.hardware.health==='bridge_unavailable'?'':'live';
   $('connection').textContent=lease?'控制通道在线':'状态已连接';$('modeBadge').textContent=latest.simulated?'仿真环境':latest.zero_only?'零速保护':latest.armed?'运动已使能':'运动未使能';
-  $('reason').textContent=latest.mode+' · '+latest.reason;$('speed').textContent=latest.measured?Number(latest.measured[0]).toFixed(3):'—';$('yawSpeed').textContent=latest.measured?Number(latest.measured[1]).toFixed(3):'—';$('latency').textContent=latest.loop_ms;
-  $('estop').textContent=latest.hardware.estop===true?'已按下':latest.hardware.estop===false?'未按下':'未知';$('gate').textContent=latest.hardware.health;controlButtons();
-  $('armHint').textContent=latest.zero_only?'零速部署：可预览规划，实际速度保持为零。':'松开遥控会停车；空格或连接中断会解除使能。';
-  if(latest.footprint)$('extended').checked=latest.footprint.rear>.3;
+  $('reason').textContent=latest.mode+' · '+healthText(latest.reason);$('speed').textContent=latest.measured?Number(latest.measured[0]).toFixed(3):'—';$('yawSpeed').textContent=latest.measured?Number(latest.measured[1]).toFixed(3):'—';$('latency').textContent=latest.loop_ms;
+  $('estop').textContent=latest.hardware.estop===true?'已按下':latest.hardware.estop===false?'未按下':'未知';$('gate').textContent=healthText(latest.hardware.health);controlButtons();$('outputWarning').hidden=!latest.hardware.output_warning;$('outputWarning').textContent=latest.hardware.output_warning?'警告：RSim 与 '+(latest.hardware.output_publishers||[]).join('、')+' 共用速度入口，命令可能互相覆盖。':'';
+  $('leaseState').textContent=(latest.control_mode==='shared'?'共享控制 · '+(latest.controller_count||0)+' 个控制端，命令可能冲突':'独占控制 · 新页面可立即接管')+(controlReady?' · 当前页面已取得':'');
+  $('armHint').textContent=latest.zero_only?'运动许可尚未生效：在开发者设置保存并重启服务。':!controlReady?'先取得控制权，再使能运动。':drivingHealth()!=='ok'?'暂不能使能：'+healthText(drivingHealth())+(latest.hardware.output_publishers?.length?'（'+latest.hardware.output_publishers.join('、')+'）':''):latest.armed?(latest.reason==='blocked'?'障碍检查未通过，当前保持零速。持续按住且检查恢复通过后才会继续。':latest.manual_control?.releasing?'松手减速中；保持页面连接。空格或停止按钮可立即停车。':'运动已使能。松开遥控按模型减速；空格、失焦或失联立即停车并解除使能。'):'控制权已取得，点击“使能运动”后即可驾驶。';
+  $('disarmReason').hidden=latest.armed||!latest.last_disarm;$('disarmReason').textContent=latest.last_disarm?'上次解除使能：'+healthText(latest.last_disarm.reason):'';
+  if(latest.footprint)$('extended').checked=latest.pedal?.automatic?!latest.pedal.retracted:latest.footprint.rear>.5;
   $('driveMode').value=latest.drive_mode||'towing';$('brakeHint').textContent=latest.manual_control?.brake_locked?'正在刹车：停稳后松开反向键，再按才会倒车。':'';if(typeof updateControlLabels==='function')updateControlLabels();
+  $('manualCollision').checked=latest.manual_collision_check!==false;
+  $('manualCollisionHint').textContent=latest.manual_collision_check===false?'警告：手动避障已关闭，操作者负责避让。急停、碰撞开关、速度限制及失联停车仍生效。':'自动停障按可刹停距离限制速度，接近障碍时减速。导航始终进行避障。';
   updateAuxiliary();
   const chosen=$('mapSelect').value?catalog.maps.find(m=>m.map_uuid===$('mapSelect').value):latest.map;
   if(chosen&&(!meta||chosen.version!==meta.version)){meta=chosen;mapImage=null;imageKey='';if(latest.pose&&showingLive()){view.x=latest.pose[0];view.y=latest.pose[1];}}
@@ -103,7 +110,10 @@ async function refreshVisual(){if(visualBusy||!$('visuals').checked||document.hi
   }
   visual=await api('/api/visual');draw();
 }catch(e){notice(e.message);}finally{visualBusy=false;}}
-setInterval(()=>{const now=performance.now();if(now-lastStatus>($('low').checked?2000:500)){lastStatus=now;poll();}if(now-lastVisual>($('low').checked?2500:500)){lastVisual=now;refreshVisual();}},200);
+// Independent timers remove the 500 ms / 200 ms sampling alias.
+setInterval(()=>{const now=performance.now();if(!$('low').checked||now-lastStatus>=2000){lastStatus=now;poll();}},200);
+setInterval(()=>{const now=performance.now();if(!$('low').checked||now-lastVisual>=2500){lastVisual=now;refreshVisual();}},250);
+$('manualCollision').onchange=()=>send('manual_collision',{collision_check:$('manualCollision').checked});
 const canvas=$('map'),ctx=canvas.getContext('2d');
 function toScreen(p){return [(p[0]-view.x)*view.scale+canvas.clientWidth/2,canvas.clientHeight/2-(p[1]-view.y)*view.scale];}
 function toWorld(p){return [(p[0]-canvas.clientWidth/2)/view.scale+view.x,view.y-(p[1]-canvas.clientHeight/2)/view.scale];}
@@ -113,7 +123,7 @@ function draw(){
   const dpr=window.devicePixelRatio||1;canvas.width=canvas.clientWidth*dpr;canvas.height=canvas.clientHeight*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);if(!$('visuals').checked)return;
   if(mapImage&&meta){const o=toScreen(meta.origin);ctx.save();ctx.translate(...o);ctx.rotate(-meta.yaw);ctx.imageSmoothingEnabled=false;const size=meta.resolution*view.scale;ctx.drawImage(mapImage,0,-meta.height*size,meta.width*size,meta.height*size);ctx.restore();}
   for(const point of waypoints){const p=toScreen([point.x,point.y]);ctx.fillStyle='#4b779a';ctx.beginPath();ctx.arc(...p,4,0,Math.PI*2);ctx.fill();ctx.font='11px sans-serif';ctx.fillStyle='#224963';ctx.fillText(point.name,p[0]+7,p[1]-6);}
-  if(showingLive()){line(visual.path,'#2387d2',3);line(visual.trajectory,'#13b88c',2);if($('scans').checked){ctx.fillStyle='#d55e49';for(const p of visual.scan||[]){const q=toScreen(p);ctx.fillRect(q[0],q[1],2,2);}}line(visual.footprint,'#168f6a',2,true);if(latest.pose)arrow(latest.pose,'#168b65');}
+  if(showingLive()){line(visual.path,'#2387d2',3);for(const p of visual.waypoints||[]){const q=toScreen(p);ctx.fillStyle='#2387d2';ctx.beginPath();ctx.arc(...q,3,0,Math.PI*2);ctx.fill();}line(visual.trajectory,'#13b88c',2);if($('scans').checked){ctx.fillStyle='#d55e49';for(const p of visual.scan||[]){const q=toScreen(p);ctx.fillRect(q[0],q[1],2,2);}}line(visual.footprint,'#168f6a',2,true);if(latest.pose)arrow(latest.pose,'#168b65');}
   if(staged)arrow(staged,'#df9414');
 }
 new ResizeObserver(draw).observe(canvas);
@@ -170,7 +180,7 @@ function updateAuxiliary(){
   for(const id of ['voiceOnce','voiceStart','voiceAnnounce','voiceVolume'])$(id).disabled=!c.audio;
   $('localize').disabled=!c.localization;
   if(!c.mapping)$('mappingStatus').textContent='当前部署关闭建图写入；实时地图仍可浏览。';
-  if(!c.pedal)$('pedalStatus').textContent='当前部署关闭推杆动作；碰撞外形可独立设置。';
+  const pedal=latest.pedal||{};if(pedal.automatic){$('pedalStatus').textContent=pedal.retracted?'已确认完全收回，使用 '+((latest.footprint?.front||0)+(latest.footprint?.rear||0)).toFixed(2)+' × '+(latest.footprint?.width||0).toFixed(2)+' m 碰撞箱。':pedal.feedback?({extending:'正在伸出',extended:'已伸出',retracting:'正在收回',confirming_retracted:'等待确认完全收回',stopped:'推杆已停止，收回位置未确认'}[pedal.position]||'踏板位置未确认')+'，使用 0.54 × 1.08 m 碰撞箱。':'踏板反馈未知或过期，使用 0.54 × 1.08 m 碰撞箱。';$('footprintHint').textContent='碰撞外形跟随踏板到位反馈；完全收回才缩小，伸出时立即扩大。';}else if(!c.pedal)$('pedalStatus').textContent='当前部署关闭推杆动作；碰撞外形可独立设置。';
   const limits=latest.speed_limits||{};
   for(const [id,key]of [['navLimit','navigation'],['manualLimit','manual'],['angularLimit','angular']]){
     if(!$(id).dataset.edited&&document.activeElement!==$(id)&&limits[key]!=null)$(id).value=limits[key];

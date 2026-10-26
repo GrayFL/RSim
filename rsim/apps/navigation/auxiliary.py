@@ -143,7 +143,10 @@ class VoiceSession:
 
     async def pump(self):
         while True:
-            if self.bound_lease and not self.lease_valid(self.bound_lease):
+            import inspect
+            valid = self.lease_valid(self.bound_lease) if self.bound_lease else True
+            if inspect.isawaitable(valid): valid = await valid
+            if not valid:
                 self.bound_lease = None
                 try: await self.call('stop')
                 except (ValueError, RuntimeError, TimeoutError, OSError): pass

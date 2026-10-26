@@ -20,7 +20,9 @@ class Metronome:
         else:
             self.deadline += self.period
             if self.deadline < now:
-                skipped = math.ceil((now - self.deadline) / self.period)
+                # Execute the latest due tick now. Rounding up to the next
+                # future slot halves the rate when work overruns by only 1 ms.
+                skipped = int((now - self.deadline) / self.period + 1e-9)
                 self.missed += skipped
-                self.deadline += skipped * self.period
+                self.deadline = now
         await asyncio.sleep(max(0, self.deadline - loop.time()))

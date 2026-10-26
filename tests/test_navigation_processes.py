@@ -153,3 +153,65 @@ def test_slow_global_solver_does_not_block_manual_control(tmp_path, delay_stage)
             assert time.monotonic()-start < .8  # The global worker is still asleep.
             await client.stop()
     asyncio.run(run())
+
+
+def test_shared_blocked_route_keeps_goal_and_arm_then_recovers(tmp_path):
+    """A real global/local process round trip with a removable scan barrier."""
+    import math
+    import numpy as np
+
+    class BarrierBridge(SimulationBridge):
+        async def emit(self, name, data, **metadata):
+            # Publish one coherent sensor frame. Emitting the empty-room scan
+            # before its barrier replacement would create intermittent holes.
+            if name == 'scan' and not (tmp_path/'remove-barrier').exists():
+                data = dict(data)
+                angles = data['angle_min'] + np.arange(len(data['ranges'])) * data['angle_increment']
+                dx = np.cos(angles + self.position[2])
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    distance = (1. - self.position[0]) / dx
+                data['ranges'] = np.minimum(data['ranges'], np.where((dx > 0) & (distance > 0), distance, np.inf))
+            await super().emit(name, data, **metadata)
+
+    async def run():
+        bridge = BarrierBridge(drive_mode='differential')
+        service = NavigationService(bridge, dict(optional_scans=[], max_compute_ms=450, drive_mode='differential',
+            footprint=dict(front=.1, rear=.4, width=.54, margin=.03)), simulated=True, workers=True)
+        provider = SharedProvider(service, key='navigation-barrier:' + uuid.uuid4().hex,
+            placement={service.workers.local: ProcessPlacement('local'), service.workers.global_: ProcessPlacement('global')},
+            log_path=tmp_path/'barrier.log')
+        client = NavigationClient(provider, service.config, simulated=True, motion_enabled=True)
+        async with Runtime(client):
+            async with asyncio.timeout(25):
+                while client.map is None or client.status()['hardware']['health'] != 'ok': await asyncio.sleep(.05)
+            lease, sequence = await client.claim(), 0
+            async def command(op, **args):
+                nonlocal sequence
+                sequence += 1
+                await client.command(dict(op=op, lease=lease, sequence=sequence,
+                    deadline_ms=time.monotonic()*1000+490, **args))
+            await command('arm')
+            await command('goal', x=1.8, y=0, yaw=0)
+            async with asyncio.timeout(3):
+                while not client.status()['armed'] or client.status()['mode'] != 'navigation':
+                    await command('heartbeat');await asyncio.sleep(.05)
+            async with asyncio.timeout(18):
+                while True:
+                    s = client.status()
+                    (tmp_path/'last-status.json').write_text(json.dumps(s, default=str))
+                    with (tmp_path/'trace.jsonl').open('a') as capture: capture.write(json.dumps(s, default=str)+'\n')
+                    assert s['armed'], s
+                    if s['reason'] == 'waiting_obstacle' and s['pose'][0] > .65 and abs(s['measured'][0]) < .01: break
+                    await command('heartbeat');await asyncio.sleep(.1)
+            for _ in range(5):
+                await command('heartbeat');await asyncio.sleep(.1)
+                s = client.status()
+                assert s['armed'] and s['goal'] == [1.8, 0., 0.] and s['pose'][0] < .85
+            assert s['planning']['partial'] and s['planning']['diagnostics']['api'].startswith('pyrobo.planning.')
+            (tmp_path/'remove-barrier').touch()
+            async with asyncio.timeout(18):
+                while client.status()['reason'] != 'arrived':
+                    await command('heartbeat');await asyncio.sleep(.1)
+            s = client.status()
+            assert not s['armed'] and s['goal'] is None and abs(s['pose'][0]-1.8) < .18
+    asyncio.run(run())

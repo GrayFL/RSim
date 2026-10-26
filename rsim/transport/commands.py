@@ -31,14 +31,19 @@ class CommandClient(Component):
         self.last = None
         self.publisher = self.subscription = None
         self.ready = asyncio.Event()
+        self.wake = asyncio.Event()
+
+    def enqueue(self, response):
+        self.responses.append(response)
+        self.wake.set()
 
     async def open(self):
         transport = self.dependencies[0]
         self.publisher = transport.publisher(self.channel.topic + "/request", durable=False, depth=16)
-        self.subscription = transport.subscribe(self.channel.topic + "/reply", self.responses.append,
+        self.subscription = transport.subscribe(self.channel.topic + "/reply", self.enqueue,
                                                  durable=False, depth=16)
         self.store = SharedStore(Path(self.channel.directory) / (self.channel.session_token or uuid.uuid4().hex), history=32)
-        self.task("command-replies", self.receive, hz=500)
+        self.task("command-replies", self.receive_when_ready, hz=None)
         self.task("discover-provider", self.discover, hz=20)
 
     async def discover(self):
@@ -59,6 +64,11 @@ class CommandClient(Component):
                     future.set_exception(CommandRejected(response["error"], reason=response.get("reason", "invalid")))
                 else:
                     future.set_result(response["result"])
+
+    async def receive_when_ready(self):
+        await self.wake.wait()
+        self.wake.clear()
+        await self.receive()
 
     async def request(self, packet, *, timeout=.6):
         if self._closed or self._failure is not None:
@@ -130,6 +140,11 @@ class CommandServer(Component):
         self.v2_instance = channel.instance_id
         self.allow_static = channel.instance_id is None
         self.owner_token = None
+        self.wake = asyncio.Event()
+
+    def enqueue(self, request):
+        self.pending.append(request)
+        self.wake.set()
 
     async def release_token(self, token):
         if self.tokens is not None:
@@ -143,9 +158,14 @@ class CommandServer(Component):
     async def open(self):
         transport = self.dependencies[1]
         self.publisher = transport.publisher(self.channel.topic + "/reply", durable=False, depth=16)
-        self.subscription = transport.subscribe(self.channel.topic + "/request", self.pending.append,
+        self.subscription = transport.subscribe(self.channel.topic + "/request", self.enqueue,
                                                  durable=False, depth=16)
-        self.task("command-requests", self.dispatch, hz=500)
+        self.task("command-requests", self.dispatch_when_ready, hz=None)
+
+    async def dispatch_when_ready(self):
+        await self.wake.wait()
+        self.wake.clear()
+        while self.pending: await self.dispatch()
 
     async def dispatch(self):
         if not self.pending:

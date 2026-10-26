@@ -10,13 +10,14 @@ import json
 import os
 from pathlib import Path
 import shlex
+import socket
 import time
 import uuid
 
 from ..core.component import Component
 from ..core.commands import CommandSink, VelocityCommand
 from .ros1 import decode_message
-from .ros1_wire import VERSION, path_for, read_packet, write_packet
+from .ros1_wire import VERSION, path_for, read_packet, write_packet, notification_address
 
 
 class LocalROS1Bridge(Component):
@@ -31,10 +32,16 @@ class LocalROS1Bridge(Component):
         self.agent = Path(agent) if agent else Path(__file__).resolve().parents[2] / 'compat' / 'ros1_local_agent.py'
         self.motion_enabled = bool(motion_enabled)
         self.armed = False
+        self.manual_direct = False
+        self.footprint_rear = .81
         self.drive_mode = self.config.get('drive_mode', 'towing')
         self.process = self.log = None
+        self.processes, self.logs = [], []
+        self.updates = self.command_notify = None
         self.session, self.command_sequence, self.action_sequence = None, 0, 0
         self.signatures = {}
+        self.packet_sequences = {}
+        self.poll_lock = asyncio.Lock()
         names = set(self.config['topics']) | {'pose', 'status', 'action_result'}
         for name in names:
             if hasattr(self, name):
@@ -48,36 +55,50 @@ class LocalROS1Bridge(Component):
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=False)
         self.command_sequence = self.action_sequence = 0
         self.signatures.clear()
+        self.packet_sequences.clear()
         self.armed = False
         self.config_path = self.directory / ('config-' + self.session + '.json')
         self.config_path.write_text(json.dumps(self.config), encoding='utf8')
         os.chmod(self.config_path, 0o600)
         await self.heartbeat()
+        self.updates = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.updates.bind(notification_address(self.session, 'updates'))
+        self.updates.setblocking(False)
+        self.command_notify = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.command_notify.setblocking(False)
         arguments = [self.python, '-u', str(self.agent), '--directory', str(self.directory),
-                     '--session', self.session, '--config', str(self.config_path),
-                     '--lockfile', str(self.root_directory / 'agent.lock')]
+                     '--session', self.session, '--config', str(self.config_path)]
         if self.motion_enabled: arguments.append('--enable-motion')
         script = 'set -e\n' + ''.join('source ' + shlex.quote(p) + ' >&2\n' for p in self.setup)
-        script += 'exec ' + shlex.join(arguments)
         # Do not leak conda's Python/loader variables into the ROS Python 2 child.
         environment = {'HOME': os.environ.get('HOME', '/root'), 'LANG': 'C.UTF-8',
                        'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                        'ROS_MASTER_URI': self.config.get('master_uri', 'http://127.0.0.1:11311'),
                        'ROS_IP': self.config.get('ros_ip', '127.0.0.1'),
                        'ROBOT_TYPE': self.config.get('robot_type', '')}
-        self.log = (self.directory / 'agent.log').open('wb')
         try:
-            self.process = await asyncio.create_subprocess_exec('/bin/bash', '--noprofile', '--norc', '-c', script,
-                                                               env=environment, stdout=self.log, stderr=self.log)
+            roles = ('command', 'pose', 'sensors') if self.config.get('split_processes', False) else ('combined',)
+            for role in roles:
+                args = arguments + ['--role', role, '--lockfile', str(self.root_directory / ('agent-' + role + '.lock'))]
+                log = (self.directory / ('agent-' + role + '.log')).open('wb')
+                self.logs.append(log)
+                process = await asyncio.create_subprocess_exec('/bin/bash', '--noprofile', '--norc', '-c',
+                    script + 'exec ' + shlex.join(args), env=environment, stdout=log, stderr=log)
+                self.processes.append(process)
+            self.process, self.log = self.processes[0], self.logs[0]
             self.task('heartbeat', self.heartbeat, hz=10)
             async with asyncio.timeout(20):
                 while True:
-                    if self.process.returncode is not None:
-                        raise RuntimeError('ROS1 relay exited; inspect ' + str(self.directory / 'agent.log'))
-                    ready = await asyncio.to_thread(read_packet, str(self.directory), 'ready')
-                    if ready and ready.get('session') == self.session: break
+                    if any(p.returncode is not None for p in self.processes):
+                        raise RuntimeError('ROS1 relay exited; inspect ' + str(self.directory))
+                    ready = [await asyncio.to_thread(read_packet, str(self.directory),
+                              'ready' if role == 'combined' else 'ready_' + role) for role in roles]
+                    if all(p and p.get('session') == self.session for p in ready): break
                     await asyncio.sleep(.05)
-            self.task('mailboxes', self.poll, hz=30)
+            await self.poll()
+            self._tasks.add(asyncio.create_task(self.receive_updates(), name='ROS1:updates'))
+            # Recovery for a dropped datagram and child-death detection only.
+            self.task('mailbox-recovery', self.poll, hz=2)
         except BaseException:
             await self.close()
             raise
@@ -86,29 +107,50 @@ class LocalROS1Bridge(Component):
         await asyncio.to_thread(write_packet, str(self.directory), 'heartbeat',
                                 {'session': self.session, 'stamp_ns': time.monotonic_ns()})
 
-    def read_changed(self):
+    def read_changed(self, names=None):
         changed = []
-        for name in self.outputs:
-            path = Path(path_for(str(self.directory), name))
-            try:
-                info = path.stat()
-            except FileNotFoundError:
-                continue
-            signature = (info.st_mtime_ns, info.st_size, info.st_ino)
-            if signature == self.signatures.get(name): continue
+        for name in (self.outputs if names is None else names):
+            if name not in self.outputs: continue
+            # Notifications already identify changed mailboxes; avoid a stat
+            # syscall per frame (especially costly under PRoot).
+            if names is None:
+                try: info = Path(path_for(str(self.directory), name)).stat()
+                except FileNotFoundError: continue
+                signature = (info.st_mtime_ns, info.st_size, info.st_ino)
+                if signature == self.signatures.get(name): continue
+                self.signatures[name] = signature
             packet = read_packet(str(self.directory), name)
-            if packet and packet.get('session') == self.session and packet.get('version') == VERSION:
+            if (packet and packet.get('session') == self.session and packet.get('version') == VERSION
+                    and packet.get('sequence', 0) > self.packet_sequences.get(name, 0)):
                 changed.append((name, packet))
-            self.signatures[name] = signature
+                self.packet_sequences[name] = packet['sequence']
         return changed
 
-    async def poll(self):
-        if self.process.returncode is not None:
-            raise RuntimeError('ROS1 child exited with code ' + str(self.process.returncode))
-        for name, packet in await asyncio.to_thread(self.read_changed):
-            data = decode_message(packet['data'])
-            metadata = {k: v for k, v in packet.items() if k != 'data'}
-            await self.outputs[name].publish(data, stamp_ns=packet['stamp_ns'], clock='ros:system', metadata=metadata)
+    async def receive_updates(self):
+        loop = asyncio.get_running_loop()
+        while True:
+            names = {(await loop.sock_recv(self.updates, 128)).decode('ascii')}
+            try:
+                while True: names.add(self.updates.recv(128).decode('ascii'))
+            except BlockingIOError: pass
+            await self.poll(names)
+
+    async def poll(self, names=None):
+        # Recovery and datagram delivery share one cursor. Reading/publishing
+        # concurrently could deliver an older snapshot after a newer frame.
+        async with self.poll_lock:
+            if any(p.returncode is not None for p in self.processes):
+                raise RuntimeError('ROS1 child exited with code ' + str(self.process.returncode))
+            for name, packet in await asyncio.to_thread(self.read_changed, names):
+                data = decode_message(packet['data'])
+                metadata = {k: v for k, v in packet.items() if k != 'data'}
+                metadata['bridge_read_ns'] = time.monotonic_ns()
+                await self.outputs[name].publish(data, stamp_ns=packet['stamp_ns'], clock='ros:system', metadata=metadata)
+
+    def wake_command(self):
+        if self.command_notify:
+            try: self.command_notify.sendto(b'command', notification_address(self.session, 'command'))
+            except (FileNotFoundError, BlockingIOError, ConnectionRefusedError): pass
 
     async def apply(self, envelope):
         command = envelope.value
@@ -118,7 +160,10 @@ class LocalROS1Bridge(Component):
             {'version': VERSION, 'session': self.session, 'sequence': self.command_sequence,
              'controller_epoch': self.session, 'deadline_ns': envelope.deadline_ns,
              'linear_x': command.linear_x, 'angular_z': command.angular_z, 'armed': self.armed,
+             'footprint_rear': self.footprint_rear,
+             'manual_direct': self.manual_direct,
              'drive_mode': self.drive_mode})
+        self.wake_command()
 
     async def stop(self, fallback=None):
         if not self.session: return
@@ -128,6 +173,7 @@ class LocalROS1Bridge(Component):
             {'version': VERSION, 'session': self.session, 'sequence': self.command_sequence,
              'controller_epoch': self.session, 'deadline_ns': time.monotonic_ns() + 250000000,
              'linear_x': 0., 'angular_z': 0., 'armed': False})
+        self.wake_command()
 
     async def relocalize(self, x, y, yaw):
         """Explicit localization command, separate from all velocity mailboxes."""
@@ -147,15 +193,20 @@ class LocalROS1Bridge(Component):
     async def close(self):
         try:
             await self.stop()
-            if self.process and self.process.returncode is None:
-                self.process.terminate()
+            for process in self.processes:
+                if process.returncode is None: process.terminate()
+            for process in self.processes:
                 try:
-                    await asyncio.wait_for(self.process.wait(), 3)
+                    await asyncio.wait_for(process.wait(), 3)
                 except TimeoutError:
-                    self.process.kill()
-                    await self.process.wait()
+                    process.kill()
+                    await process.wait()
         finally:
-            if self.log: self.log.close()
+            for log in self.logs: log.close()
+            for sock in (self.updates, self.command_notify):
+                if sock: sock.close()
+            self.updates = self.command_notify = None
+            self.processes, self.logs = [], []
             self.process = self.log = None
             if hasattr(self, 'config_path'): self.config_path.unlink(missing_ok=True)
 

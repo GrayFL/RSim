@@ -72,13 +72,76 @@ class OccupancyMap:
         return self.png
 
 
-def laser_points(message, transform):
+def laser_points(message, transform, self_filter=None, *, allow_empty=False, body_transform=None, body_filter=None,
+                 tray_filter=None):
     """Use the TF at the scan's acquisition stamp, never a guessed extrinsic."""
     ranges = np.asarray(message['ranges'], float)
     angles = float(message['angle_min']) + np.arange(len(ranges)) * float(message['angle_increment'])
     valid = np.isfinite(ranges) & (ranges >= message['range_min']) & (ranges <= message['range_max'])
-    if len(ranges) < 8 or not valid.any(): raise ValueError('laser has no usable returns')
+    if self_filter:
+        # Match only calibrated near-field self returns in sensor coordinates.
+        # Preserve farther obstacles in the same direction, and all map cells.
+        maximum = float(self_filter['max_range'])
+        padding = int(self_filter.get('padding_beams', 0))
+        if not math.isfinite(maximum) or not 0 < maximum <= .3 or not 0 <= padding <= 5:
+            raise ValueError('invalid near-field self filter')
+        angle_padding = padding * abs(float(message['angle_increment'])) + 1e-9
+        for lower, upper in self_filter['angle_masks']:
+            if not math.isfinite(lower) or not math.isfinite(upper) or lower >= upper:
+                raise ValueError('invalid self-filter angles')
+            valid &= ~((ranges <= maximum) & (angles >= lower-angle_padding) & (angles <= upper+angle_padding))
+        # Calibrated echoes at the edge of an existing hardware blind sector
+        # need their own short range bound, not an enlarged whole-body mask.
+        for edge in self_filter.get('edge_echo_masks', []):
+            lower, upper, limit = [float(edge[k]) for k in ('lower', 'upper', 'max_range')]
+            if not all(math.isfinite(v) for v in (lower, upper, limit)) or not 0 < upper-lower <= .04 or not 0 < limit <= .5:
+                raise ValueError('invalid calibrated edge echo mask')
+            valid &= ~((ranges <= limit) & (angles >= lower) & (angles <= upper))
+    if len(ranges) < 8: raise ValueError('laser has no usable returns')
+    if not valid.any():
+        # A fresh auxiliary depth-to-scan frame can legitimately see no
+        # obstacles: +inf marks no return. Do not confuse that with a missing
+        # sensor, an all-invalid frame, or a required primary lidar failure.
+        if allow_empty and np.isposinf(ranges).any() and not np.isneginf(ranges).any():
+            return np.empty((0, 2))
+        raise ValueError('laser has no usable returns')
     points = np.column_stack((ranges[valid] * np.cos(angles[valid]), ranges[valid] * np.sin(angles[valid]), np.zeros(valid.sum())))
+    speckle_range = float((self_filter or {}).get('near_speckle_range', 0.))
+    if not 0 <= speckle_range <= .6: raise ValueError('invalid near-field speckle range')
+    if speckle_range:
+        # Near-field multipath jumps around the taped shell; it is not confined
+        # to a fixed strip. Require three neighboring beams within 25 mm.
+        # Coherent surfaces (including the docks) and all farther returns stay.
+        indices = np.flatnonzero(valid)
+        lookup = np.full(len(ranges), -1, dtype=int)
+        lookup[indices] = np.arange(len(points))
+        neighbors = np.zeros(len(points), int)
+        for shift in (-3, -2, -1, 1, 2, 3):
+            other = lookup[(indices+shift) % len(ranges)]
+            neighbors += (other >= 0) & (np.linalg.norm(points - points[np.maximum(other, 0)], axis=1) <= .025)
+        points = points[(ranges[valid] > speckle_range) | (neighbors >= 2)]
     from scipy.spatial.transform import Rotation
+    if body_filter:
+        if body_transform is None: raise ValueError('missing sensor-to-body transform')
+        body_points = Rotation.from_quat(body_transform['quaternion']).apply(points) + body_transform['translation']
+        front, rear, width = [float(body_filter[k]) for k in ('front', 'rear', 'width')]
+        padding = float(body_filter.get('padding', 0.))
+        if not all(math.isfinite(v) and v > 0 for v in (front, rear, width)) or not 0 <= padding <= .02:
+            raise ValueError('invalid calibrated body self filter')
+        inside = ((body_points[:, 0] <= front+padding) & (body_points[:, 0] >= -rear-padding)
+                  & (np.abs(body_points[:, 1]) <= width/2+padding))
+        points = points[~inside]
+    if tray_filter:
+        # Only observed returns inside the physical rear tray are self returns.
+        # Use the scan-time body transform, never a future predicted footprint;
+        # a wall ahead of a moving tray must remain an obstacle.
+        if body_transform is None: raise ValueError('missing sensor-to-body transform')
+        inner, outer, width = [float(tray_filter[k]) for k in ('inner', 'outer', 'width')]
+        if not all(math.isfinite(v) for v in (inner, outer, width)) or not 0 < inner < outer or width <= 0:
+            raise ValueError('invalid physical tray filter')
+        body_points = Rotation.from_quat(body_transform['quaternion']).apply(points) + body_transform['translation']
+        inside = ((body_points[:, 0] <= -inner) & (body_points[:, 0] >= -outer)
+                  & (np.abs(body_points[:, 1]) <= width / 2))
+        points = points[~inside]
     q = transform['quaternion']
     return (Rotation.from_quat(q).apply(points) + transform['translation'])[:, :2]

@@ -4,6 +4,15 @@ param([Parameter(Mandatory=$true)][string]$SdkRoot,
 $ErrorActionPreference='Stop'
 $tools=Join-Path $SdkRoot 'android-15'
 $platform=Join-Path $SdkRoot 'android-12\android.jar'
+if (Test-Path (Join-Path $SdkRoot 'build-tools')) {
+    $tools=(Get-ChildItem (Join-Path $SdkRoot 'build-tools') -Directory |
+        Where-Object Name -Match '^\d+\.\d+\.\d+$' |
+        Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1).FullName
+    $platformDir=(Get-ChildItem (Join-Path $SdkRoot 'platforms') -Directory |
+        Where-Object Name -Match '^android-\d+(\.\d+)?$' |
+        Sort-Object { [version](($_.Name -replace '^android-', '') + '.0') } -Descending | Select-Object -First 1).FullName
+    $platform=Join-Path $platformDir 'android.jar'
+}
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
 $Output=(Resolve-Path $Output).Path
 $classes=Join-Path $Output 'classes'
@@ -12,9 +21,9 @@ New-Item -ItemType Directory -Force -Path $classes | Out-Null
 if ($LASTEXITCODE) { throw 'Resource compilation failed' }
 & "$tools\aapt2.exe" link -o "$Output\unsigned.apk" --manifest "$PSScriptRoot\AndroidManifest.xml" -I $platform "$Output\resources.zip"
 if ($LASTEXITCODE) { throw 'Resource linking failed' }
-& "$JavaRoot\bin\javac.exe" -encoding UTF-8 -source 8 -target 8 -classpath $platform -d $classes "$PSScriptRoot\src\org\rsim\console\MainActivity.java"
+& "$JavaRoot\bin\javac.exe" -encoding UTF-8 -source 8 -target 8 -classpath $platform -d $classes (Get-ChildItem "$PSScriptRoot\src\org\rsim\console\*.java").FullName
 if ($LASTEXITCODE) { throw 'Java compilation failed' }
-& "$JavaRoot\bin\java.exe" -cp "$tools\lib\d8.jar" com.android.tools.r8.D8 --min-api 26 --lib $platform --output $Output "$classes\org\rsim\console\MainActivity.class"
+& "$JavaRoot\bin\java.exe" -cp "$tools\lib\d8.jar" com.android.tools.r8.D8 --min-api 26 --lib $platform --output $Output (Get-ChildItem "$classes\org\rsim\console\*.class").FullName
 if ($LASTEXITCODE) { throw 'DEX compilation failed' }
 & "$JavaRoot\bin\jar.exe" uf "$Output\unsigned.apk" -C $Output classes.dex
 & "$tools\zipalign.exe" -f 4 "$Output\unsigned.apk" "$Output\aligned.apk"

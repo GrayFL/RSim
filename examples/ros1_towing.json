@@ -90,7 +90,17 @@
         "hz": 1
       }
     },
-    "drive_mode": "towing"
+    "drive_mode": "towing",
+    "allowed_output_publishers": [
+      "/twist_mux"
+    ],
+    "pedal_feedback": {
+      "interface": "can1",
+      "status_id": 388,
+      "command_id": 1540,
+      "retracted_payload": "0400000000000000",
+      "timeout": 1.5
+    }
   },
   "vehicle": {
     "max_linear": 1.6,
@@ -144,5 +154,29 @@
   "voice": {
     "directory": "/root/DataBags/zbz/onboard_nav",
     "python": "/usr/bin/python3"
+  },
+  "scan_self_filters": {
+    "scan": {
+      "max_range": 0.25,
+      "padding_beams": 4,
+      "angle_masks": [
+        [
+          -2.55,
+          -2.42
+        ],
+        [
+          -0.945,
+          -0.8
+        ],
+        [
+          0.8,
+          0.945
+        ],
+        [
+          2.42,
+          2.55
+        ]
+      ]
+    }
   }
 }

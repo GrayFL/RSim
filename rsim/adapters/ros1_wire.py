@@ -14,6 +14,13 @@ VERSION = 1
 MAX_BYTES = 32 * 1024 * 1024
 
 
+def notification_address(session, channel):
+    """Linux abstract socket: PRoot does not translate sendto path addresses."""
+    if not re.match(r'^[a-f0-9]{32}$', session) or channel not in ('command', 'updates'):
+        raise ValueError('invalid notification address')
+    return '\0rsim.' + session + '.' + channel
+
+
 def path_for(directory, name):
     if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]{0,63}$', name):
         raise ValueError('invalid mailbox name')

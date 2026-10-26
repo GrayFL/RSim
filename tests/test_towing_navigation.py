@@ -78,7 +78,7 @@ def test_blocked_turn_does_not_fall_back_to_pivot():
     wall = np.array([[x, y] for x in np.arange(-1, 1.01, .04) for y in [-.4, .4]])
     nav, obstacles, bounds = obstacle_setup(BodyFootprint(rear=.27), wall)
     result = nav.step(np.zeros(3), np.zeros(2), np.array([-.6, 0, math.pi]), obstacles, bounds)
-    assert not result.safe
+    assert result.status == 'waiting_obstacle' and result.planning['partial']
     assert result.command.linear_x == result.command.angular_z == 0
 
 

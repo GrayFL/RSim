@@ -160,13 +160,14 @@ class Component:
     async def close(self):
         pass
 
-    def task(self, name: str, callback: Callable[[], Awaitable], *, hz: float):
+    def task(self, name: str, callback: Callable[[], Awaitable], *, hz: float | None):
         if self._runtime is None or self._closed:
             raise ComponentError("task registration requires an active runtime")
-        metronome = Metronome(hz)
+        # hz=None is for callbacks that await an input/event themselves.
+        metronome = Metronome(hz) if hz is not None else None
         async def run():
             while True:
-                await metronome.tick()
+                if metronome is not None: await metronome.tick()
                 await callback()
         task = asyncio.create_task(run(), name=f"{type(self).__name__}:{name}")
         self._tasks.add(task)

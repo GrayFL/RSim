@@ -74,17 +74,18 @@ def test_voice_intent_uses_existing_lease_and_keeps_manual_priority(rig):
     body = command(op='manual', throttle=.3, steering=0)
     body['deadline_ms'] = time.monotonic()*1000+400
     assert client.post('/api/control', json=body).status_code == 200
-    sequence = controller.sequence
+    lease = body['lease']
+    sequence = controller.controllers[lease]['sequence']
     intent = dict(ok=True, intent='goto_location', location={'loc_uuid': saved['id']})
-    result = client.portal.call(app.state.voice.on_intent, controller.lease, intent)
+    result = client.portal.call(app.state.voice.on_intent, lease, intent)
     assert result['controller'] == 'RSim'
     assert controller.mode == 'manual'
     assert controller.goal.tolist() == [1., 0., 0.]
-    assert controller.sequence == sequence
+    assert controller.controllers[lease]['sequence'] == sequence
     assert controller.armed is False
-    controller.lease_deadline = 0.
+    controller.controllers[lease]['deadline'] = 0.
     with pytest.raises(ValueError, match='disconnected'):
-        client.portal.call(app.state.voice.on_intent, controller.lease, dict(ok=True, intent='resume_nav'))
+        client.portal.call(app.state.voice.on_intent, lease, dict(ok=True, intent='resume_nav'))
 
 
 def test_reserved_goal_survives_heartbeat_but_not_stop(rig):
@@ -97,7 +98,7 @@ def test_reserved_goal_survives_heartbeat_but_not_stop(rig):
     assert controller.mode == 'navigation'
     request = command(op='goal', x=2, y=0, yaw=0)
     ticket = client.portal.call(controller.reserve_goal, request)
-    client.post('/api/control', json={'op': 'stop'})
+    client.post('/api/control', json=command(op='stop'))
     with pytest.raises(ValueError, match='stopped'): client.portal.call(controller.commit_goal, ticket, request)
 
 
@@ -105,7 +106,7 @@ def test_delayed_localization_cannot_run_after_stop(rig):
     client, app, controller, command = rig
     request = command(op='goal', x=1, y=0, yaw=0)
     ticket = client.portal.call(controller.reserve_goal, request)
-    client.post('/api/control', json={'op': 'stop'})
+    client.post('/api/control', json=command(op='stop'))
     with pytest.raises(ValueError, match='stopped'):
         client.portal.call(controller.relocalize_reserved, ticket, 1, 0, 0)
     assert controller.bridge.position.tolist() == [0., 0., 0.]

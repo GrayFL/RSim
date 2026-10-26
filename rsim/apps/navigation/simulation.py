@@ -56,7 +56,8 @@ class SimulationBridge(Component):
             ry = (np.where(dy >= 0, 4.9, -4.9) - y) / dy
         ranges = np.minimum(rx, ry)
         await self.emit('scan', {'angle_min': -math.pi, 'angle_increment': 2 * math.pi / 180,
-            'range_min': .02, 'range_max': 15., 'ranges': ranges}, world_transform=transform)
+            'range_min': .02, 'range_max': 15., 'ranges': ranges}, world_transform=transform,
+            body_transform={'translation': [0., 0., 0.], 'quaternion': [0., 0., 0., 1.]})
         p = self.model.parameters
         await self.emit('status', {'health': 'ok', 'estop': False, 'bumper': False, 'scheduler': 'STOP',
             'reason': 'simulation', 'limits': [p.max_linear, p.max_angular], 'published': self.target.tolist(), 'ages': {}})

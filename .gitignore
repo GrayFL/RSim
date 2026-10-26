@@ -7,7 +7,7 @@ dist/
 assets
 /configs
 AGENTS.md
-PROJECT.md
+PROJECT*.md
 .*
 !.gitignore
 !.gitattributes

@@ -20,8 +20,6 @@ class NavigationClient(Component):
         self.map = None
         self.map_sequence = 0
         self.observed_points = np.empty((0, 2))
-        self.lease = None
-        self.lease_deadline = 0.
 
     async def open(self):
         self.task('web-map', self.refresh_map, hz=2)
@@ -75,12 +73,15 @@ class NavigationClient(Component):
         return reply
 
     async def claim(self):
-        self.lease = (await self.rpc('claim'))['lease']
-        return self.lease
+        return (await self.rpc('claim'))['lease']
 
     async def command(self, request): return await self.rpc('command', **request)
 
-    async def apply_settings(self, values): return await self.rpc('settings', values=values)
+    async def apply_settings(self, values, *, lease=None): return await self.rpc('settings', values=values, lease=lease)
+
+    async def validate_controller(self, lease): return (await self.rpc('controller_valid', lease=lease))['valid']
+
+    async def release_controller(self, lease): return await self.rpc('release', lease=lease)
 
     async def stop(self, reason='operator_stop', cancel=False):
         return await self.rpc('stop', reason=reason, cancel=cancel)

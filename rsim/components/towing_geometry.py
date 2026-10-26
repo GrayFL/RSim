@@ -133,3 +133,48 @@ class BodyObstacles:
         travel = np.linalg.norm(np.diff(states[:, :2], axis=0), axis=1)
         rotation = np.abs(wrap(np.diff(states[:, 2]))) * footprint.radius
         return bool(np.all(np.minimum(clearance[:-1], clearance[1:]) > (travel + rotation) / 2))
+
+
+class ObstacleUnion(BodyObstacles):
+    """Exact union for local collision queries, retaining the static map index.
+
+    Each part checks the full body and bounds. Taking the minimum preserves
+    every static/dynamic obstacle and unknown-map check; no distance culling.
+    Global planners that inspect a point tree still use a single full index.
+    """
+    def __init__(self, *parts):
+        self.parts = parts
+
+    def clearances(self, states, footprint, bounds):
+        return np.minimum.reduce([part.clearances(states, footprint, bounds) for part in self.parts])
+
+    def segment_free(self, a, b, radius, bounds):
+        return all(part.segment_free(a, b, radius, bounds) for part in self.parts)
+
+
+class BodyRouteObstacles:
+    """Exact straight-body queries for a tight global start or goal.
+
+    A circumscribed disk can reject a valid asymmetric robot pose near a dock.
+    Pyrobo's XY graph has no headings, so each edge may be traversed in either
+    orientation. The realized route separately checks every turn and segment
+    before any of its waypoints are accepted.
+    """
+    def __init__(self, obstacles, footprint, start, goal):
+        self.obstacles, self.footprint = obstacles, footprint
+        self.start, self.goal = np.asarray(start), np.asarray(goal)
+        self.cloud, self.xy, self.tree = obstacles.cloud, obstacles.xy, obstacles.tree
+        self.point_radius = obstacles.point_radius
+
+    def segment_free(self, a, b, radius, bounds):
+        a, b = np.asarray(a), np.asarray(b)
+        length = np.linalg.norm(b - a)
+        if length < 1e-9:
+            pose = self.start if np.linalg.norm(a-self.start[:2]) < np.linalg.norm(a-self.goal[:2]) + 1e-9 else self.goal
+            return bool(self.obstacles.clearances(np.r_[a, pose[2]][None], self.footprint, bounds)[0] > 0)
+        heading = np.arctan2(b[1]-a[1], b[0]-a[0])
+        path = np.column_stack((np.linspace(a, b, max(2, int(np.ceil(length/.04))+1)),
+                                np.full(max(2, int(np.ceil(length/.04))+1), heading)))
+        if self.obstacles.path_safe(path, self.footprint, bounds): return True
+        path[:, 2] += np.pi
+        return self.obstacles.path_safe(path, self.footprint, bounds)

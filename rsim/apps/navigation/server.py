@@ -24,12 +24,15 @@ from ...runtime import Runtime
 
 class Control(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
-    op: Literal['heartbeat', 'arm', 'manual', 'goal', 'pause', 'resume', 'stop', 'cancel', 'footprint', 'drive_mode', 'speeds']
+    op: Literal['heartbeat', 'idle', 'arm', 'manual', 'manual_collision', 'goal', 'pause', 'resume', 'stop', 'cancel', 'footprint', 'drive_mode', 'speeds']
     lease: str | None = Field(default=None, max_length=64)
     sequence: int | None = Field(default=None, strict=True, ge=1)
     deadline_ms: float | None = None
     throttle: float = Field(default=0, ge=-1, le=1)
     steering: float = Field(default=0, ge=-1, le=1)
+    input_source: Literal['keys', 'joystick'] = 'keys'
+    input_active: bool = Field(default=True, strict=True)
+    collision_check: bool = Field(default=True, strict=True)
     x: float = Field(default=0, ge=-10000, le=10000)
     y: float = Field(default=0, ge=-10000, le=10000)
     yaw: float = Field(default=0, ge=-100, le=100)
@@ -116,6 +119,28 @@ def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, a
     @app.get('/')
     async def index(): return HTMLResponse(index_html, headers={'Cache-Control': 'no-store'})
 
+    @app.get('/legacy')
+    async def legacy_page():
+        return HTMLResponse((static / 'legacy.html').read_text(encoding='utf8'), headers={'Cache-Control': 'no-store'})
+
+    @app.post('/api/legacy/{operation}')
+    async def legacy_service(operation: str, request: Request):
+        if not service.config.get('legacy_service', False): raise HTTPException(404, 'legacy service not configured')
+        if operation not in ('start', 'stop'): raise HTTPException(400, 'invalid operation')
+        body = await request.json()
+        await service.command(dict(body, op='cancel'))
+        script = Path(__file__).resolve().parents[3] / 'scripts' / 'legacy_hih_service.py'
+        process = await asyncio.create_subprocess_exec('/usr/bin/python3', str(script), operation,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            async with asyncio.timeout(30): output, error = await process.communicate()
+        except BaseException:
+            if process.returncode is None: process.kill()
+            await process.wait()
+            raise
+        if process.returncode: raise HTTPException(503, output.decode(errors='replace')[:200])
+        return json.loads(output)
+
     @app.get('/api/health')
     async def health():
         return {'ok': service._failure is None, 'zero_only': not service.bridge.motion_enabled,
@@ -200,7 +225,8 @@ def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, a
                 count += 1
                 if count > 40: raise ValueError('control rate exceeds 40 Hz')
                 command = Control.model_validate_json(raw)
-                if command.lease == service.lease: owner = command.lease
+                if owner is None: owner = command.lease
+                elif command.lease != owner: raise ValueError('socket controller cannot change')
                 if command.op == 'goal' and command.map_uuid:
                     # Vendor map-identity reads may be slow. Continue receiving
                     # manual/stop/heartbeat packets; a late goal must still pass
@@ -216,9 +242,8 @@ def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, a
         finally:
             for task in pending: task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
-            if owner is not None and owner == service.lease:
-                await service.stop('controller_disconnected')
-                service.lease_deadline = 0.
+            if owner is not None:
+                await service.release_controller(owner)
             try: await ws.close()
             except RuntimeError: pass
 
@@ -255,6 +280,7 @@ def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, a
         def bounded(points, maximum):
             return points[::max(1, math_ceil(len(points) / maximum))].round(3).tolist()
         return {'path': bounded(service.path, 250), 'trajectory': bounded(service.trajectory, 120),
+                'waypoints': service.status().get('planning', {}).get('waypoints', []),
                 'scan': bounded(service.observed_points, 600), 'pose': service.pose_value,
                 'footprint': service.footprint.corners(service.pose_value).tolist() if service.pose_value else []}
 
@@ -296,7 +322,7 @@ def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, a
             values = settings.check(body.get('values'), body.get('revision'))
             previous = deepcopy(settings.active)
             active = settings.live(values)
-            await service.apply_settings(active)
+            await service.apply_settings(active, lease=body['lease'])
             try: settings.save(values, body['revision'])
             except (OSError, ValueError):
                 await service.apply_settings(previous)
@@ -485,7 +511,7 @@ def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, a
         if intent in ('pedal_extend', 'pedal_retract'):
             # No implicit claim/arming, and no expired voice session may move
             # the actuator. The stop command itself is always harmless.
-            if lease != service.lease or not service.status().get('control_owned'): raise ValueError('voice controller disconnected')
+            if not await service.validate_controller(lease): raise ValueError('voice controller disconnected')
             return await pedal(intent.removeprefix('pedal_'))
         op = {'goto_location': 'goal', 'cancel_nav': 'cancel', 'pause_nav': 'pause', 'resume_nav': 'resume'}.get(intent)
         if op is None: raise ValueError('unsupported voice intent')
@@ -499,7 +525,7 @@ def create_app(service, token: str | None, *, own_runtime=True, data_dir=None, a
         return {'ok': True, 'action': op, 'controller': 'RSim'}
 
     voice = VoiceSession(service.config.get('voice', {}), data_dir, voice_intent,
-                         lambda lease: lease == service.lease and service.status().get('control_owned', False))
+                         service.validate_controller)
     app.state.voice = voice
     app.state.support = support
 
