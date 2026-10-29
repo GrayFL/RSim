@@ -14,6 +14,8 @@ not establish confidence intervals, stable individual runs, or hardware latency.
 
 ``extensions`` measures synthetic TickSource fanout and ReplaySource publication;
 it does not measure physics, rendering, recorder I/O or distributed lockstep.
+``memory`` samples Linux RSS in an untraced pass, then traced peak and net retained
+Python allocations in a separate pass. Retained counts are not allocation totals.
 """
 from __future__ import annotations
 
@@ -262,6 +264,80 @@ async def extensions(args):
     print(json.dumps({'extensions': str(args.output), 'rows': len(rows)}), flush=True)
 
 
+async def memory_benchmark(operations):
+    import resource
+    import tracemalloc
+    import numpy as np
+    from rsim.core import Component
+    from rsim.runtime import Runtime
+
+    def rss():
+        pages = int(Path('/proc/self/statm').read_text().split()[1])
+        return pages * os.sysconf('SC_PAGE_SIZE')
+
+    source = Component()
+    output = source.signal('output', history=2, clock='bench')
+    payload = np.zeros(1024)
+    sequence = 0
+
+    async def publish_get(count):
+        nonlocal sequence
+        for _ in range(count):
+            frame = await output.publish(payload, stamp_ns=sequence, clock='bench')
+            assert await output.get() is frame
+            sequence += 1
+
+    async with Runtime(output):
+        await publish_get(1000)
+        gc.collect()
+        rss_before = rss()
+        await publish_get(operations)
+        rss_after = rss()
+        # On Linux ru_maxrss is KiB. Capture it before tracing allocates its own
+        # bookkeeping so the RSS result describes the uninstrumented pass.
+        peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+        tracemalloc.start(1)
+        await publish_get(1000)
+        gc.collect()
+        before = tracemalloc.take_snapshot()
+        traced_before, _ = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        await publish_get(operations)
+        traced_after, traced_peak = tracemalloc.get_traced_memory()
+        after = tracemalloc.take_snapshot()
+        deltas = after.compare_to(before, 'filename')
+        rsim_deltas = [delta for delta in deltas if '/rsim/' in str(delta.traceback)]
+        tracemalloc.stop()
+    return dict(operations_per_pass=operations, payload_elements=1024, history=2,
+                rss_before_bytes=rss_before, rss_after_bytes=rss_after,
+                rss_delta_bytes=rss_after-rss_before,
+                process_peak_rss_before_tracing_bytes=peak_rss,
+                traced_current_delta_bytes=traced_after-traced_before,
+                traced_peak_above_start_bytes=traced_peak-traced_before,
+                net_retained_allocation_count=sum(delta.count_diff for delta in deltas),
+                net_retained_bytes=sum(delta.size_diff for delta in deltas),
+                rsim_net_retained_allocation_count=sum(delta.count_diff for delta in rsim_deltas),
+                rsim_net_retained_bytes=sum(delta.size_diff for delta in rsim_deltas))
+
+
+async def memory(args):
+    import rsim
+    os.sched_setaffinity(0, {int(value) for value in args.cpus.split(',')})
+    rows = [dict(await memory_benchmark(args.operations), repeat=repeat+1)
+            for repeat in range(args.repeat)]
+    write(args.output, dict(python=sys.executable, platform=platform.platform(),
+                           imported_source=rsim.__file__, affinity=sorted(os.sched_getaffinity(0)),
+                           source_sha256={name: hashlib.sha256((Path(rsim.__file__).parent/name).read_bytes()).hexdigest()
+                                          for name in ('core/component.py', 'core/signal.py', 'core/metronome.py')},
+                           rows=rows, limitations=[
+                               'Linux current RSS and process high-water mark; not worker totals or native/GPU allocation accounting.',
+                               'Untraced RSS pass precedes a separate tracemalloc pass; no throughput or latency claim is made.',
+                               'Snapshot differences count net live allocations only. Temporaries that were freed are not counted; total allocation calls remain unmeasured.',
+                               'Python traced peak includes instrumentation bookkeeping; all source and tool allocations are included unless explicitly labelled rsim.',
+                           ]))
+    print(json.dumps({'memory': str(args.output), 'rows': len(rows)}), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -276,7 +352,9 @@ def main():
         command.add_argument('--scenario', choices=('all', 'local-load-1000'), default='all')
         command.add_argument('--warmup-seconds', type=float, default=0.)
         command.add_argument('--disable-gc', action='store_true')
-    for command in (paired, focused, commands.add_parser('extensions')):
+    memory_command = commands.add_parser('memory')
+    memory_command.add_argument('--operations', type=int, default=20000)
+    for command in (paired, focused, commands.add_parser('extensions'), memory_command):
         command.add_argument('--output', type=Path, required=True)
         command.add_argument('--repeat', type=int, default=3)
         command.add_argument('--cpus', default='4,5,6,7')
@@ -296,6 +374,10 @@ def main():
             asyncio.run(sample(args))
         else:
             parser.error('sample requires a focused scenario')
+    elif args.command == 'memory':
+        if args.operations < 1:
+            parser.error('operations must be positive')
+        asyncio.run(memory(args))
     else:
         asyncio.run(extensions(args))
 
