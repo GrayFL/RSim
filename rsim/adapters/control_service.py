@@ -29,7 +29,7 @@ class MotionService(RPCServer):
         self.inputs = () if state is None else (state,)
         self.pose = self.signal("pose", history=128)
         self.pose._target = controller.pose
-        self.state = self.signal("state", history=32)
+        self.state = self.signal("state", history=32, clock="host:monotonic")
         self._lease = None
 
     async def open(self):

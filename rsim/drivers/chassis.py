@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from typing import ClassVar
 
-from rsim.runtime.sharing import PortSpec
+from rsim.runtime.sharing import PortSpec, component_ports, validate_component_ports
 from .configuration import fingerprint, freeze_fields, plain
 
 
@@ -20,10 +20,14 @@ class ChassisFactory:
         freeze_fields(self)
 
     @staticmethod
-    def port_specs():
-        """Local telemetry only; motion is the existing RPC protocol, not a sink."""
-        return {'pose': PortSpec(history_capacity=128),
-                'state': PortSpec(history_capacity=32)}
+    def port_specs(*, pose):
+        """Declare local telemetry using the explicitly injected pose source.
+
+        The source is inspected only for this call, never retained in the recipe.
+        Motion remains the existing RPC protocol, not a shared command sink.
+        """
+        return {'pose': component_ports(pose.producer)[pose.name],
+                'state': PortSpec(history_capacity=32, clock='host:monotonic')}
 
     def fingerprint(self):
         return fingerprint(self)
@@ -38,12 +42,17 @@ class ChassisFactory:
         from rsim.adapters.control_service import MotionService
         from rsim.components.motion import ChassisController
 
+        def service_for(controller, state):
+            service = MotionService(controller, name=name, state=state, transport=transport)
+            validate_component_ports(service, self.port_specs(pose=controller.pose))
+            return service
+
         if pose is not None or velocity is not None:
             if robot is not None or simulate:
                 raise ValueError('pass pose/velocity ports, a robot, or simulate=True')
             controller = ChassisController(pose=pose, velocity=velocity,
                 motion_enabled=bool(motion_enabled), **(control or {}))
-            return MotionService(controller, name=name, state=state, transport=transport)
+            return service_for(controller, state)
         if state is not None:
             raise ValueError('state is only used with explicit pose/velocity ports')
 
@@ -56,7 +65,7 @@ class ChassisFactory:
                 pose=source.pose, velocity=source.velocity,
                 motion_enabled=bool(motion_enabled), **(control or {})
             )
-            return MotionService(controller, name=name, state=source.state, transport=transport)
+            return service_for(controller, source.state)
         if robot is None:
             raise ValueError("supply a configured local robot or simulate=True")
         if control:
@@ -66,9 +75,7 @@ class ChassisFactory:
             and bool(motion_enabled) != robot.control.motion_enabled
         ):
             raise ValueError("motion_enabled must match the supplied robot controller")
-        service = MotionService(
-            robot.control, name=name, state=robot.chassis.state, transport=transport
-        )
+        service = service_for(robot.control, robot.chassis.state)
         scan = getattr(robot, 'scan', None)
         if scan is not None:
             service.dependencies += (scan.producer,)

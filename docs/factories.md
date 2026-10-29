@@ -18,6 +18,7 @@ imu_provider = imu.shared()
 service_recipe = ChassisFactory(name="robot", motion_enabled=False)
 service = service_recipe.build(pose=localizer.pose, velocity=chassis.velocity,
                                state=chassis.state)
+local_telemetry = service_recipe.port_specs(pose=localizer.pose)
 rpc_client = service_recipe.device()
 ```
 
@@ -39,6 +40,8 @@ rpc_client = service_recipe.device()
 | `ChassisFactory` | 本地 `pose/state` 遥测 | 既有 MotionService RPC / `rsim.devices.Chassis` |
 
 `port_specs(...)` 是各类所在设备模块内唯一完整声明。构建型传感器工厂从该声明取得 history/clock/TTL，并核对构造完成后的真实端口；适配器仍负责采样和命令执行。可调用 `Factory.port_specs(history=...)` 查看配置对应的声明，`RobinWFactory` 还接受 `ip`，`ROS2TopicFactory` 接受 `kind/clock`，`HipnucFactory` 接受 `clock`，`STM32Factory` 接受 `max_ttl`。
+
+RPC 服务的 pose 来自调用方注入的资源，`ChassisFactory.port_specs(pose=...)` 因而要求显式给出同一个 pose 端口，仅在该次调用中读取它的 clock/history，配方不保存活动资源。state 遥测固定为 host monotonic；build 会检查两个本地端口。它没有可脱离输入预设的通用 pose 时钟，也不是多端口 Shared Ports 的启动配方。
 
 这次保持原有单输出共享与 RPC 的线协议、key、version 和客户端调用方式；它们没有变成 `ChassisPortsDevice` 所用的多端口 Shared Ports。特别是 RPC 的运动操作不是 `ChassisFactory.port_specs()` 中的 CommandSink，不应把两类客户端连接到错误的服务。
 

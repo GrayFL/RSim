@@ -162,7 +162,7 @@ def test_native_preparation_is_explicit_and_legacy_wrapper_prepares(monkeypatch,
 
 def test_rpc_chassis_injects_live_ports_without_storing_them_in_recipe():
     owner = Component()
-    pose = owner.signal('pose', clock='test:pose')
+    pose = owner.signal('pose', clock='test:pose', history=7)
     velocity = CommandSink(owner, 'velocity', lambda envelope: None,
                            fallback=VelocityCommand(), max_ttl=.5)
     recipe = ChassisFactory(control={'command_ttl': .2})
@@ -170,12 +170,26 @@ def test_rpc_chassis_injects_live_ports_without_storing_them_in_recipe():
     assert service.controller.pose._target is pose
     assert service.controller.velocity is velocity
     assert not service.controller.motion_enabled
-    validate_component_ports(service, recipe.port_specs())
+    specs = recipe.port_specs(pose=pose)
+    assert specs['pose'].clock == 'test:pose'
+    assert specs['pose'].history_capacity == 7
+    assert specs['state'].clock == 'host:monotonic'
+    validate_component_ports(service, specs)
     compatible = Chassis(pose=pose, velocity=velocity, control={'command_ttl': .2})
     assert type(compatible) is type(service)
     assert type(recipe.device()).__module__ == 'rsim.devices.chassis'
     with pytest.raises(ValueError):
         recipe.build(pose=pose, velocity=velocity, robot=object())
+
+
+def test_rpc_simulation_declares_the_injected_pose_source():
+    recipe = ChassisFactory(simulate=True)
+    service = recipe.build()
+    specs = recipe.port_specs(pose=service.controller.pose)
+    assert specs['pose'].clock == 'simulation'
+    assert specs['pose'].history_capacity == 32
+    validate_component_ports(service, specs)
+    assert service._runtime is None
 
 
 def _build_worker(recipe, queue):
