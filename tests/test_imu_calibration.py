@@ -7,7 +7,7 @@ from graphmap.pose import Pose
 
 from rsim import Component, Runtime
 from rsim.components.imu_calibration import PlanarIMU, PlanarIMUCalibration, calibrate_planar_imu
-from rsim.components.simulated_chassis import imu_message
+from fakes import imu_message
 
 
 def windows():

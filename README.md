@@ -58,7 +58,7 @@ class Analysis(Component):
 - `get()` 取最新值；`get(after=frame.sequence)` 等待本 Signal 的新值。sequence 是本地观察游标，不是跨进程采样 ID。
 - 时间戳查询必须指定 `clock`；历史有界，找不到容差内样本时抛出 `HistoryMiss`。
 - `Bundle` 取各路 latest snapshot；`Synchronizer` 围绕参考时间 join，跨时钟必须配置 `ClockTransform`，插值需显式提供函数。
-- task / service 由 Metronome 控速，每个 Component 有 WatchDog；同一循环的阻塞计算应放入独立 ProcessPlacement。
+- task / service 默认由 Metronome 控速，每个 Component 有 WatchDog；任务也可显式选择源事件 Pacer。主机安全期限不随仿真暂停，详见 [节奏与回放](docs/pacing.md)。同一循环的阻塞计算应放入独立 ProcessPlacement。
 
 完整语义、迁移与限制见 [架构文档](docs/architecture.md)。源码职责、依赖方向、新增设备与内部导入迁移见 [包结构与扩展](docs/modules.md)。
 
@@ -98,7 +98,9 @@ BlueSea 2D 雷达可通过 `rsim.drivers.BlueSea` 启动外部 ROS2 驱动，同
 
 ## 控制与仲裁
 
-MuJoCo adapter 接受应用提供的仿真后端工厂，只处理 RSim 端口、生命周期与命令期限。接入教程为 `python -m examples.mujoco_adapter`；差速机器人、室内场景和应用属于独立的 MujocoSim 项目，不作为 RSim 固有实现。见 [MuJoCo 协议接入](docs/mujoco.md)。
+内存仿真由 `pyrobo.rsim.drivers.MemoryChassisFactory` 提供，MuJoCo 仿真由 `mujocosim.rsim.drivers.MujocoChassisFactory` 提供。两者都可通过 `rsim.devices.ChassisPortsDevice` 的 `pose / state / velocity` 公共能力接入同一份 pyrobo 导航。工厂配置、完整端口和运行实现分别归所属项目，RSim 不包含物理引擎实现。
+
+`build()` 构造未运行的本地组件，`shared()` 构造共享启动描述，Device 只连接。完整声明在启动前及 ready 前校验；通用消费者可不安装引擎和 MujocoSim。见 [公共底盘端口](docs/chassis-ports.md)、[内置工厂](docs/factories.md)、[MuJoCo 提供端](docs/mujoco.md) 和 [0.4 迁移说明](docs/migration-v4.md)。
 
 ```python
 from rsim import Connect, CommandMux, CommandInput, VelocityCommand

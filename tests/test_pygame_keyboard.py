@@ -168,7 +168,7 @@ def test_x11_plain_upload_preserves_pixels_without_shm(xdisplay):
 
 def test_real_window_keys_focus_and_suspended_renderer_stop_commands(xdisplay):
     pytest.importorskip("graphmap")
-    from rsim.components.simulated_chassis import SimulatedChassis
+    from fakes import RecordingChassis as SimulatedChassis
     from rsim.components.teleoperation import Teleoperation
     from rsim.core import VelocityCommand
 
@@ -271,9 +271,9 @@ def test_cli_window_controls_dds_simulator_and_cleans_up(xdisplay, exit_mode):
                 focus(display, window)
                 await asyncio.sleep(0.15)
                 press(display, "w")
-                await until(lambda: source.command.linear_x > 0.025)
+                await until(lambda: source.applied.linear_x > 0.025)
                 press(display, "space")
-                await until(lambda: source.command == VelocityCommand(), 0.3)
+                await until(lambda: source.applied == VelocityCommand(), 0.3)
                 press(display, "space", False)
                 press(display, "w", False)
                 if exit_mode == "escape":
@@ -306,7 +306,7 @@ def test_cli_window_controls_dds_simulator_and_cleans_up(xdisplay, exit_mode):
                     await until(lambda: service.owner is None)
                     await asyncio.sleep(.35)
                     assert child.returncode is None  # fault stays visible
-                    assert source.command == VelocityCommand()
+                    assert source.applied == VelocityCommand()
                     assert window.id in [w.id for w in display.screen().root.query_tree().children]
                     press(display, "Escape")
                 else:
@@ -335,7 +335,7 @@ def test_cli_window_controls_dds_simulator_and_cleans_up(xdisplay, exit_mode):
                 if exit_mode == "command_rejected":
                     assert b"retrying in" in output
                 await until(lambda: service.owner is None, 0.5)
-                assert source.command == VelocityCommand()
+                assert source.applied == VelocityCommand()
                 assert window.id not in [
                     w.id for w in display.screen().root.query_tree().children
                 ]
@@ -394,8 +394,16 @@ def test_reconnects_same_window_without_resuming_held_key(xdisplay, outage):
     async def run(display):
         name = "reconnect_" + uuid.uuid4().hex
         def provider():
-            return Provider(name=name, simulate=True, motion_enabled=True,
-                            transport=TransportConfig(domain_id=87))
+            service = Provider(name=name, simulate=True, motion_enabled=True,
+                               transport=TransportConfig(domain_id=87))
+            source = service.controller.velocity.producer
+            source._test_commands = []
+            apply = source.velocity.apply
+            async def record(envelope):
+                await apply(envelope)
+                source._test_commands.append((envelope.sequence, envelope.value))
+            source.velocity.apply = record
+            return service
         first = provider()
         runtime = Runtime(first)
         await runtime.__aenter__()
@@ -417,7 +425,7 @@ def test_reconnects_same_window_without_resuming_held_key(xdisplay, outage):
             await asyncio.sleep(.1)
             press(display, "w")
             source = first.controller.velocity.producer
-            await until(lambda: source.command.linear_x > .02)
+            await until(lambda: source.applied.linear_x > .02)
             # Keep W physically held across either packet loss or a new server.
             if outage == "restart":
                 await runtime.aclose()
@@ -441,21 +449,21 @@ def test_reconnects_same_window_without_resuming_held_key(xdisplay, outage):
                 else:
                     first.publisher.publish = publish
             source = second.controller.velocity.producer
-            command_start = len(source.commands)
+            command_start = len(source._test_commands)
             await until(lambda: sum('Connected;' in line for line in lines) >= 2, 20)
             await asyncio.sleep(.4)
-            assert source.command == VelocityCommand()
-            assert all(command == VelocityCommand() for _, command in source.commands[command_start:])
+            assert source.applied == VelocityCommand()
+            assert all(command == VelocityCommand() for _, command in source._test_commands[command_start:])
             press(display, "w", False)
             press(display, "d")
-            await until(lambda: source.command.angular_z < -.015)
+            await until(lambda: source.applied.angular_z < -.015)
             press(display, "d", False)
             press(display, "Escape")
             await asyncio.wait_for(process.wait(), 5)
             await reader
             assert process.returncode == 0, ''.join(lines)
             await until(lambda: second.owner is None)
-            assert source.command == VelocityCommand()
+            assert source.applied == VelocityCommand()
         finally:
             if outage == "renderer_stall" and 'renderer' in locals():
                 try:

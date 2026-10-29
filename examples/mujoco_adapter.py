@@ -7,8 +7,8 @@ import asyncio
 import math
 
 from rsim.runtime import Runtime
-from rsim.drivers import MuJoCo
-from rsim.adapters.mujoco import CommandSpec, Observation
+from mujocosim.rsim.components.source import MuJoCoSource
+from mujocosim.rsim.components.protocol import CommandSpec, Observation
 from rsim.core import CommandRejected
 
 
@@ -47,7 +47,7 @@ def is_zero(value): return value == 0.
 
 
 async def main():
-    source = MuJoCo(JointBackend, outputs={'angle': 8},
+    source = MuJoCoSource(JointBackend, outputs={'angle': 8},
                      commands={'torque': CommandSpec(0., is_zero, validate_torque)}, motion_enabled=True)
     async with Runtime(source):
         await source.torque.set(.1, ttl=.15)

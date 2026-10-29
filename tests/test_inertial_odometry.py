@@ -133,7 +133,7 @@ def test_native_chassis_recipe_uses_no_internal_sharing(tmp_path):
 
 def test_generic_chassis_service_accepts_pose_and_sink():
     from rsim.drivers import Chassis
-    from rsim.components.simulated_chassis import SimulatedChassis
+    from fakes import RecordingChassis as SimulatedChassis
     from rsim.components.odometry import PlanarOdometry
     source = SimulatedChassis(noise=False, gyro_bias=0)
     estimate = PlanarOdometry(source.odom, source.imu)

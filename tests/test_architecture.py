@@ -56,7 +56,8 @@ class NoOptionalDependencies(MetaPathFinder):
         if fullname.split('.')[0] in {
             'rclpy', 'rospy', 'std_msgs', 'sensor_msgs', 'geometry_msgs',
             'nav_msgs', 'ament_index_python', 'cyclonedds', 'serial',
-            'cv2', 'graphmap', 'yaml', 'mujoco', 'trimesh', 'scipy', 'PIL', 'matplotlib',
+            'cv2', 'graphmap', 'yaml', 'mujoco', 'mujocosim', 'pyrobo',
+            'trimesh', 'scipy', 'PIL', 'matplotlib',
         }:
             raise AssertionError('eager optional dependency: ' + fullname)
 sys.meta_path.insert(0, NoOptionalDependencies())

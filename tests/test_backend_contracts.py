@@ -24,7 +24,7 @@ def test_same_zero_control_application_and_si_contract():
     from rsim.devices import Chassis
     from rsim.drivers import Chassis as ChassisService
     from rsim.transport.descriptor import TransportConfig
-    from rsim.components.simulated_chassis import SimulatedChassis
+    from fakes import RecordingChassis as SimulatedChassis
     source = SimulatedChassis(noise=False)
     state = source.feedback
     estimate = PlanarOdometry(source.odom, source.imu)

@@ -21,4 +21,4 @@ SSH 中 CLI 自动使用终端输入，也可显式指定 `--input terminal`。�
 
 [local_chassis.ipynb](local_chassis.ipynb) 用于驱动侧标定、组装与直接零速检查，配置模板是 [local_chassis.example.yaml](local_chassis.example.yaml)。对应脚本：`python -m examples.control.local_chassis configs/local_chassis.yaml`。
 
-[chassis_motion.ipynb](chassis_motion.ipynb) 保留本地 EKF/控制算法演示；可复用的模拟底盘在 `rsim.components.simulated_chassis`，硬件组装在 `rsim.drivers.local_chassis`，配置入口在 `rsim.config.local_chassis`。
+[chassis_motion.ipynb](chassis_motion.ipynb) 保留本地 EKF/控制算法演示；产品内存底盘使用 `pyrobo.rsim.drivers.MemoryChassisFactory`（有限力模型，旧理想噪声演示已退役），硬件组装在 `rsim.drivers.local_chassis`，配置入口在 `rsim.config.local_chassis`。

@@ -43,7 +43,7 @@ def test_dds_motion_and_cancellation_release_control():
             action.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await action
-            assert server.controller.velocity.producer.command == VelocityCommand()
+            assert server.controller.velocity.producer.applied == VelocityCommand()
             assert server.owner is None
             await other.drive(VelocityCommand(0.05, 0))
             await other.stop()
@@ -127,7 +127,7 @@ def test_service_task_failure_stops_inflight_action():
             server.task("injected", fail, hz=100)
             await asyncio.sleep(0.2)
             assert server._failure is not None
-            assert server.controller.velocity.producer.command == VelocityCommand()
+            assert server.controller.velocity.producer.applied == VelocityCommand()
             action.cancel()
             await asyncio.gather(action, return_exceptions=True)
 
@@ -210,18 +210,23 @@ asyncio.run(main())
             try:
                 async with asyncio.timeout(10):
                     assert (await child.stdout.readline()).rstrip(b'\r\n') == b"ready"
-                    while source.command.linear_x == 0:
+                    while source.applied.linear_x == 0:
                         await asyncio.sleep(0.01)
                 child.kill()
                 await child.wait()
                 async with asyncio.timeout(0.6):
                     while (
-                        source.command != VelocityCommand() or server.owner is not None
+                        source.applied != VelocityCommand() or server.owner is not None
                     ):
                         await asyncio.sleep(0.01)
-                stopped = source.state.copy()
+                # The finite-force provider brakes physically after the lease
+                # expires; it does not teleport measured velocity to zero.
+                async with asyncio.timeout(1):
+                    while abs(source.state.frames[-1].data['linear_x']) > .001:
+                        await asyncio.sleep(.01)
+                stopped = source.pose.frames[-1].data.position.copy()
                 await asyncio.sleep(0.15)
-                assert (source.state == stopped).all()
+                assert source.pose.frames[-1].data.position == pytest.approx(stopped, abs=.001)
             finally:
                 if child.returncode is None:
                     child.kill()

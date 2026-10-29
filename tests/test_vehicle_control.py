@@ -29,7 +29,7 @@ def test_terminal_speed_friction_reversal_and_pivot():
     model.reset()
     advance(model, "a", 8)
     assert model.linear == 0 and model.angular == pytest.approx(
-        p.terminal_yaw_rate, rel=0.001
+        min(p.terminal_yaw_rate, p.pivot_rate), rel=0.001
     )
     advance(model, "", 4)
     assert model.angular == 0
@@ -96,7 +96,7 @@ def test_listener_thread_events_repeats_release_and_close():
 
 def test_listener_failure_stops_manual_output_without_application_cleanup():
     pytest.importorskip("graphmap")
-    from rsim.components.simulated_chassis import SimulatedChassis
+    from fakes import RecordingChassis as SimulatedChassis
     from rsim.components.teleoperation import Teleoperation
     from rsim.core import VelocityCommand
 

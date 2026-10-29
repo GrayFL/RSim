@@ -87,7 +87,7 @@ def test_terminal_ignores_escape_sequences_and_bracketed_paste():
 def test_hangup_stops_model_and_cancellation_restores_terminal():
     from rsim.core import VelocityCommand
     from rsim.components.teleoperation import Teleoperation
-    from rsim.components.simulated_chassis import SimulatedChassis
+    from fakes import RecordingChassis as SimulatedChassis
 
     async def run():
         master, slave = pty.openpty()
@@ -178,17 +178,17 @@ def test_cli_over_pty_reaches_simulated_dds_service_and_restores_echo(exit_mode)
                 while time.monotonic() < until:
                     os.write(master, b"w")
                     await asyncio.sleep(0.04)
-                assert source.command.linear_x > 0.02
+                assert source.applied.linear_x > 0.02
                 os.write(master, b" ")
                 async with asyncio.timeout(0.3):
-                    while source.command != VelocityCommand():
+                    while source.applied != VelocityCommand():
                         await asyncio.sleep(0.01)
                 if exit_mode == "key":
                     os.write(master, b"q")
                 else:
                     process.send_signal(signal.SIGINT)
                 assert await asyncio.wait_for(process.wait(), 3) == 0
-                assert source.command == VelocityCommand()
+                assert source.applied == VelocityCommand()
                 assert termios.tcgetattr(slave) == before
             finally:
                 if process.returncode is None:

@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+pytest.importorskip('mujocosim', reason='optional deprecated bridge requires the local MujocoSim project')
 from rsim.runtime import Runtime
 from rsim.adapters.mujoco import MuJoCoSource, Observation, CommandSpec
 from rsim.core import CommandRejected
@@ -81,7 +82,7 @@ def test_generic_commands_demand_thread_ownership_and_reset():
             stamp, episode = frame.stamp_ns, frame.metadata['episode']
             await component.reset()
             reset = await component.feedback.get()
-            assert reset.stamp_ns > stamp
+            assert reset.stamp_ns == 0  # native reset; legacy continuous is explicit
             assert reset.metadata['episode'] == episode + 1
             assert component.current_commands == {'force': 0., 'grip': 0.}
         assert component.backend.calls[-2:] == ['stop', 'close']
@@ -114,13 +115,16 @@ import sys
 from importlib.abc import MetaPathFinder
 class Block(MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'mujoco','mujocosim','trimesh','graphmap','PIL'}:
+        if fullname.split('.')[0] in {'mujoco','trimesh','graphmap','PIL'}:
             raise AssertionError(fullname)
 sys.meta_path.insert(0, Block())
 from rsim.adapters.mujoco import MuJoCoSource, CommandSpec, Observation
 from rsim.drivers import MuJoCo
 component = MuJoCo(lambda: None, outputs={'angle': 2})
 assert component.backend is None
+from mujocosim.rsim.components.source import MuJoCoSource as Current
+assert MuJoCoSource is Current
+assert component.reset_policy == 'legacy_continuous'
 '''
     result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

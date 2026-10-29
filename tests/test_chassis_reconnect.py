@@ -44,7 +44,7 @@ def test_service_rebuilds_after_runtime_timeout_without_replaying_commands(monke
             second = services[-1]
             assert second.generation != generation
             assert second.owner is None
-            assert second.controller.velocity.producer.command == VelocityCommand()
+            assert second.controller.velocity.producer.applied == VelocityCommand()
             client = Chassis(args.name, transport=TransportConfig(domain_id=86))
             async with Runtime(client):
                 await client.pose.get(timeout=3)

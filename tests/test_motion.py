@@ -11,7 +11,7 @@ from graphmap.pose import Pose
 from rsim import Component, ComponentError, Runtime, ProcessPlacement, VelocityCommand
 from rsim.components.motion import ChassisController, MotionError
 from rsim.components.odometry import PlanarEKF, PlanarOdometry, wrap_angle
-from rsim.components.simulated_chassis import SimulatedChassis, odom_message, imu_message
+from fakes import RecordingChassis as SimulatedChassis, odom_message, imu_message
 
 
 def test_ekf_reduces_noisy_pose_error_and_estimates_gyro_bias():
