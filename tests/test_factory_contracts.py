@@ -7,12 +7,14 @@ import pytest
 
 from rsim.core import Component, CommandSink, ComponentError, VelocityCommand
 from rsim.devices import ChassisPortsDevice
-from rsim.runtime import Runtime, SharedProvider, PortSpec, component_ports, validate_component_ports
+from rsim.runtime import Runtime, SharedProvider, PortSpec, ProcessPlacement, component_ports, validate_component_ports
 
 
 class Fixture(Component):
-    def __init__(self, mutation=None):
+    def __init__(self, mutation=None, placed=False):
         super().__init__()
+        if placed:
+            self.placement = ProcessPlacement('factory-owner')
         self.mutation = mutation
         self.pose = self.signal('pose', clock='fixture')
         self.state = self.signal('state', clock='fixture')
@@ -37,9 +39,10 @@ class Fixture(Component):
 @dataclass(frozen=True)
 class Factory:
     mutation: str | None = None
+    placed: bool = False
 
     def build(self):
-        return Fixture(self.mutation)
+        return Fixture(self.mutation, self.placed)
 
     def specs(self):
         return component_ports(Fixture())
@@ -76,10 +79,11 @@ def test_complete_port_set_and_safety_configuration_are_checked():
 
 
 @pytest.mark.parametrize('mutation', ['clock', 'ports', 'fallback'])
-def test_open_cannot_change_declared_ports_before_worker_ready(tmp_path, mutation):
+@pytest.mark.parametrize('placed', [False, True])
+def test_open_cannot_change_declared_ports_before_worker_ready(tmp_path, mutation, placed):
     async def run():
         log = tmp_path / 'worker.log'
-        provider = Factory(mutation).shared(key='bad-factory:' + uuid.uuid4().hex, log_path=log)
+        provider = Factory(mutation, placed).shared(key='bad-factory:' + uuid.uuid4().hex, log_path=log)
         with pytest.raises(ComponentError, match='provider port'):
             async with Runtime(provider):
                 pytest.fail('worker became ready with changed ports')
@@ -88,10 +92,11 @@ def test_open_cannot_change_declared_ports_before_worker_ready(tmp_path, mutatio
     asyncio.run(run())
 
 
-def test_bound_factory_spawns_and_public_client_connects_subset():
+@pytest.mark.parametrize('placed', [False, True])
+def test_bound_factory_spawns_and_public_client_connects_subset(placed):
     async def run():
         key = 'factory:' + uuid.uuid4().hex
-        provider = Factory().shared(key=key)
+        provider = Factory(placed=placed).shared(key=key)
         client = ChassisPortsDevice(key=key, clock='fixture', history=3)
         assert client.connection is None
         assert not hasattr(client, 'factory')

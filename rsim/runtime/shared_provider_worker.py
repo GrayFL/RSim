@@ -1,5 +1,6 @@
 """Execute a trusted recipe only in the explicitly chosen provider environment."""
 import asyncio
+from copy import deepcopy
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ from .worker import write_status
 from .port_binding import PortBinding
 from .registry import RegistryServer
 from .routing import RoutedBindings
-from .sharing import validate_component_ports
+from .sharing import component_ports, validate_component_ports
 from .deployment import ProcessPlacement
 
 
@@ -29,6 +30,20 @@ async def run(directory, listener):
     component = recipe['component'] if recipe['component'] is not None else recipe['factory']()
     specs = recipe.get('port_specs', config['manifest']['ports'])
     validate_component_ports(component, specs, check_fallback='port_specs' in recipe)
+    # Freeze contracts on the actual owners before partitioning. A placed
+    # worker must validate the owner it opens, not just its parent's proxy.
+    pending = [(component, specs, 'port_specs' in recipe)]
+    seen = set()
+    while pending:
+        owner, expected, check_fallback = pending.pop()
+        if owner in seen:
+            continue
+        seen.add(owner)
+        owner._provider_port_contract = (deepcopy(expected), check_fallback)
+        for port in (*owner.outputs.values(), *owner.sinks.values()):
+            actual_owner = port._resolved().producer
+            if actual_owner is not owner:
+                pending.append((actual_owner, component_ports(actual_owner), True))
     ports = {**component.outputs, **component.sinks}
     transport = DescriptorTransport(TransportConfig(**config['transport']))
     lifetime = Component(component, transport)

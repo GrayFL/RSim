@@ -17,6 +17,7 @@ from rsim.transport.descriptor import DescriptorTransport, TransportConfig
 from .worker import write_status
 from .port_binding import PortBinding
 from .registry import RegistryServer
+from .sharing import validate_component_ports
 
 
 async def run(directory):
@@ -27,10 +28,17 @@ async def run(directory):
     payload = cloudpickle.loads((directory / "graph.pkl").read_bytes())
     transport = DescriptorTransport(TransportConfig(**config["transport"]))
     roots, allocator = worker_graph(payload, config["group"], directory, transport)
+    contracts = [(component, component._provider_port_contract)
+                 for component, group in payload['groups'].items()
+                 if group == config['group'] and hasattr(component, '_provider_port_contract')]
     stopped = asyncio.Event()
     get_platform().process.install_shutdown(stopped, directory)
     try:
+        for component, (specs, check_fallback) in contracts:
+            validate_component_ports(component, specs, check_fallback=check_fallback)
         async with Runtime(*roots, options=RuntimeOptions.from_dict(config.get('options')), _root_ports=False) as runtime:
+            for component, (specs, check_fallback) in contracts:
+                validate_component_ports(component, specs, check_fallback=check_fallback)
             # Dynamic shared clients bind here, at the computation location.
             local_ports = {identifier: port for port, identifier in payload['port_ids'].items()
                            if payload['groups'][port.producer] == config['group']}

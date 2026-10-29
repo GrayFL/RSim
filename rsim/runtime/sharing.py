@@ -43,11 +43,23 @@ class PortSpec:
 
 
 def component_ports(component):
+    def declared(port):
+        # Follow exposed aliases, but not placement proxies: dormant workers
+        # have no requested proxy ports yet. Actual workers validate separately.
+        seen = set()
+        while getattr(port, '_target', None) is not None:
+            if id(port) in seen:
+                raise ComponentError('cyclic exposed port declaration')
+            seen.add(id(port))
+            port = port._target
+        return port
+    outputs = {name: declared(port) for name, port in component.outputs.items()}
+    sinks = {name: declared(port) for name, port in component.sinks.items()}
     ports = {name: PortSpec(clock=port.clock, history_capacity=port.history_size)
-             for name, port in component.outputs.items()}
+             for name, port in outputs.items()}
     ports.update({name: PortSpec(direction='sink', max_ttl=port.guard.max_ttl_ns / 1e9,
                                  fallback=port.fallback, clock='host:monotonic')
-                  for name, port in component.sinks.items()})
+                  for name, port in sinks.items()})
     return ports
 
 
