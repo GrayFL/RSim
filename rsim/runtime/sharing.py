@@ -1,15 +1,23 @@
 """Connection-only multi-port views and explicit same-environment providers."""
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, fields, is_dataclass
 import hashlib
 import json
 from pathlib import Path
 import math
+from typing import Protocol
 
 from rsim.core import Component, CommandSink, ComponentError, PortNotBound, ProviderDisconnected
 from rsim.transport.descriptor import DescriptorTransport, transport_config
 from rsim.transport.commands import CommandChannel, CommandClient
 from .port_binding import DDSChannel, PortImporter, start_endpoint, stop_endpoint
 from .registry import Connection, PROTOCOL, host_id, registry_paths
+
+
+class ComponentFactory(Protocol):
+    """A lightweight recipe; build returns a Component without opening resources."""
+
+    def build(self) -> Component: ...
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,46 @@ def component_ports(component):
     return ports
 
 
+def _same_value(expected, actual):
+    if type(expected) is not type(actual):
+        return False
+    if is_dataclass(expected):
+        return all(_same_value(getattr(expected, f.name), getattr(actual, f.name))
+                   for f in fields(expected))
+    if isinstance(expected, dict):
+        return expected.keys() == actual.keys() and all(
+            _same_value(value, actual[key]) for key, value in expected.items())
+    if isinstance(expected, (list, tuple)):
+        return len(expected) == len(actual) and all(map(lambda pair: _same_value(*pair), zip(expected, actual)))
+    comparison = expected == actual
+    return bool(comparison.all() if hasattr(comparison, 'all') else comparison)
+
+
+def validate_component_ports(component, specs, *, check_fallback=True):
+    """Validate a factory's complete declaration before open and before ready.
+
+    This checks structural/codec and provider-side fallback configuration, not
+    payload semantics. The latter require device-specific conformance tests.
+    Fallback remains local trusted recipe data; the wire manifest is unchanged.
+    """
+    if not isinstance(component, Component):
+        raise TypeError(f'provider factory must return Component, got {type(component).__name__}')
+    actual = component_ports(component)
+    if set(actual) != set(specs):
+        raise ValueError(f'provider port set mismatch: expected {sorted(specs)}, actual {sorted(actual)}')
+    for name, expected in specs.items():
+        expected = expected if isinstance(expected, PortSpec) else PortSpec(**expected)
+        observed = actual[name]
+        for field in ('schema', 'direction', 'clock', 'history_capacity', 'max_ttl'):
+            if getattr(expected, field) != getattr(observed, field):
+                raise ValueError(f'provider port {name!r} {field}: expected '
+                                 f'{getattr(expected, field)!r}, actual {getattr(observed, field)!r}')
+        if check_fallback and expected.direction == 'sink' and not _same_value(expected.fallback, observed.fallback):
+            raise ValueError(f'provider port {name!r} fallback: expected '
+                             f'{expected.fallback!r}, actual {observed.fallback!r}')
+    return actual
+
+
 async def describe_shared(key, *, transport=None, options=None):
     """Explicitly discover metadata before constructing a dynamic logical view."""
     config = transport_config(transport)
@@ -72,7 +120,7 @@ class SharedComponent(Component):
         self.transport = transport_config(transport)
         super().__init__(DescriptorTransport(self.transport))
         self.component_key, self.interface_version = key, interface_version
-        self.port_specs = {name: spec if isinstance(spec, PortSpec) else PortSpec(**spec)
+        self.port_specs = {name: deepcopy(spec) if isinstance(spec, PortSpec) else PortSpec(**deepcopy(spec))
                            for name, spec in ports.items()}
         if not key:
             raise ValueError('a shared view needs a nonempty key')
@@ -125,8 +173,10 @@ class SharedComponent(Component):
             raise ComponentError('conflicting shared provider configuration')
         for name, spec in self.port_specs.items():
             actual = manifest['ports'].get(name, {})
-            if any(actual.get(field) != getattr(spec, field) for field in ('schema', 'direction', 'clock', 'max_ttl')):
-                raise ComponentError(f'incompatible schema for port {name}')
+            for field in ('schema', 'direction', 'clock', 'max_ttl'):
+                if actual.get(field) != getattr(spec, field):
+                    raise ComponentError(f'incompatible schema for port {name!r}: {field} expected '
+                                         f'{getattr(spec, field)!r}, actual {actual.get(field)!r}')
         self.manifest = manifest
         for port in (*self.outputs.values(), *self.sinks.values()):
             port._bound = False
@@ -231,6 +281,7 @@ class SharedProvider(SharedComponent):
             raise ValueError('supply a component or a local provider factory')
         if component is not None:
             ports = component_ports(component) if ports is None else ports
+            validate_component_ports(component, ports)
         if ports is None:
             raise ValueError('a lazy provider factory requires known ports')
         super().__init__(key=key, ports=ports, interface_version=interface_version, transport=transport, options=options)

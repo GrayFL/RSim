@@ -7,6 +7,9 @@ _EXPORTS = {
     'PortSpec': ('rsim.runtime.sharing', 'PortSpec'),
     'serve_shared': ('rsim.runtime.sharing', 'serve_shared'),
     'describe_shared': ('rsim.runtime.sharing', 'describe_shared'),
+    'ComponentFactory': ('rsim.runtime.sharing', 'ComponentFactory'),
+    'validate_component_ports': ('rsim.runtime.sharing', 'validate_component_ports'),
+    'ChassisPortsDevice': ('rsim.devices.chassis_ports', 'ChassisPortsDevice'),
     "SampleId": ("rsim.core", "SampleId"),
     "PortNotBound": ("rsim.core", "PortNotBound"),
     "ProviderDisconnected": ("rsim.core", "ProviderDisconnected"),
@@ -131,3 +134,4 @@ def __dir__():
 
 __all__ += ["SampleId", "PortNotBound", "ProviderDisconnected"]
 __all__ += ['SharedComponent', 'SharedProvider', 'PortSpec', 'serve_shared', 'describe_shared']
+__all__ += ['ComponentFactory', 'validate_component_ports', 'ChassisPortsDevice']

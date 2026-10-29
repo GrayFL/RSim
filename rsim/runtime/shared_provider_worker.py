@@ -17,7 +17,7 @@ from .worker import write_status
 from .port_binding import PortBinding
 from .registry import RegistryServer
 from .routing import RoutedBindings
-from .sharing import component_ports
+from .sharing import validate_component_ports
 from .deployment import ProcessPlacement
 
 
@@ -27,19 +27,15 @@ async def run(directory, listener):
     os.environ['ROS_DOMAIN_ID'] = str(config['transport']['domain_id'])
     recipe = cloudpickle.loads((directory / 'recipe.pkl').read_bytes())
     component = recipe['component'] if recipe['component'] is not None else recipe['factory']()
+    specs = recipe.get('port_specs', config['manifest']['ports'])
+    validate_component_ports(component, specs, check_fallback='port_specs' in recipe)
     ports = {**component.outputs, **component.sinks}
-    if set(ports) != set(config['manifest']['ports']):
-        raise ValueError('provider recipe ports do not match manifest')
-    for name, spec in component_ports(component).items():
-        declared = config['manifest']['ports'][name]
-        if any(declared[field] != getattr(spec, field) for field in ('direction', 'clock', 'max_ttl')):
-            raise ValueError('provider disagrees with declared port interface: ' + name)
-        declared['history_capacity'] = spec.history_capacity
     transport = DescriptorTransport(TransportConfig(**config['transport']))
     lifetime = Component(component, transport)
     stopped = asyncio.Event()
     get_platform().process.install_shutdown(stopped, directory)
     async with Runtime(lifetime, placement=recipe['placement'], options=RuntimeOptions.from_dict(config.get('options')), _root_ports=False) as runtime:
+        validate_component_ports(component, specs, check_fallback='port_specs' in recipe)
         transport = transport._canonical or transport
         plan = runtime._binding_plan
         if plan and any(isinstance(spec, ProcessPlacement) and spec.transport.domain_id != transport.config.domain_id

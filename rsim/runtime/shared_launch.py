@@ -60,7 +60,7 @@ async def launch(directory, path, lock_path, mode, options, log_path=None):
             else:
                 await Connection(reader, writer).request('describe', timeout=options.startup_timeout_s)
             return reader, writer
-    except BaseException:
+    except BaseException as error:
         if writer is not None:
             writer.close()
         if process is not None:
@@ -72,7 +72,10 @@ async def launch(directory, path, lock_path, mode, options, log_path=None):
             except subprocess.TimeoutExpired:
                 process.kill()
                 await asyncio.to_thread(process.wait, timeout=options.shutdown.kill_wait_s)
+        detail = log_path.read_text(encoding='utf-8', errors='replace')[-8000:] if log_path.exists() else ''
         remove_tree(directory, ignore_errors=True)
+        if isinstance(error, (ProviderDisconnected, ConnectionError, TimeoutError)):
+            raise ComponentError(f'shared provider failed before readiness; log: {log_path}\n{detail}') from error
         raise
 
 
@@ -96,7 +99,8 @@ async def open_provider(provider):
         provider.directory = directory
         try:
             provider.log_path = worker_log(directory, options, provider._explicit_log_path)
-            recipe = dict(component=provider.component, factory=provider.factory, placement=provider.provider_placement)
+            recipe = dict(component=provider.component, factory=provider.factory,
+                          placement=provider.provider_placement, port_specs=provider.port_specs)
             (directory / 'recipe.pkl').write_bytes(cloudpickle.dumps(recipe))
             manifest = dict(protocol_version=PROTOCOL, component_key=provider.component_key,
                             instance_id=uuid.uuid4().hex, interface_version=provider.interface_version,

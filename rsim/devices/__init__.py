@@ -7,5 +7,8 @@ from .mapping import Mapper
 from .chassis import Chassis
 from .ros_topics import ROS2Topic
 from .bluesea import BlueSea
+from .ports import ChassisPorts
+from .chassis_ports import ChassisPortsDevice
 
 __all__ = ['D435', 'RobinW', 'Camera', 'Hipnuc', 'Mapper', 'Chassis', 'ROS2Topic', 'BlueSea']
+__all__ += ['ChassisPorts', 'ChassisPortsDevice']
