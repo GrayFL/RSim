@@ -78,7 +78,7 @@ class CommandGuard:
             raise CommandRejected("command deadline exceeds provider TTL")
         identity = (command.controller_id, command.controller_epoch)
         if identity in self.retired:
-            raise CommandRejected("retired controller epoch")
+            raise CommandRejected("retired controller epoch", reason="retired")
         if command.sequence <= self.sequences.get(identity, 0):
             raise CommandRejected("replayed or out-of-order command")
         if self.owner is not None and identity != self.owner:
@@ -239,10 +239,10 @@ class Connect(Component):
         try:
             await self.sink.set(command, _writer=self)
         except CommandRejected as error:
-            if error.reason != "expired":
+            if error.reason not in ("expired", "retired"):
                 raise
-            # A delayed command is rejected at the provider, but the next fresh
-            # command must still be able to use the same healthy connection.
+            # A delayed command/reset-era session stays rejected. A producer
+            # may explicitly start a new epoch; forwarding never renews it.
             self.dropped += 1
 
 
