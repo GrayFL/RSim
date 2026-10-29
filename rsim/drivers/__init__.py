@@ -1,13 +1,13 @@
 """Provider factories, organized by device; clients use rsim.devices."""
-from .realsense import D435
-from .seyond import RobinW
-from .camera import Camera
-from .hipnuc import Hipnuc
+from .realsense import D435, D435Factory
+from .seyond import RobinW, RobinWFactory
+from .camera import Camera, CameraFactory
+from .hipnuc import Hipnuc, HipnucFactory
 from .mapping import Mapper
-from .stm32 import STM32
-from .chassis import Chassis
-from .ros_topics import ROS2Topic
-from .bluesea import BlueSea
+from .stm32 import STM32, STM32Factory
+from .chassis import Chassis, ChassisFactory
+from .ros_topics import ROS2Topic, ROS2TopicFactory
+from .bluesea import BlueSea, BlueSeaFactory
 from .odometry import Odometry
 from .native_chassis import NativeChassis, TopicChassis
 from .mujoco import MuJoCo
@@ -23,3 +23,8 @@ from rsim.runtime.sharing import SharedProvider, serve_shared
 __all__ += ["SharedProvider", "serve_shared"]
 __all__ += ['Odometry', 'NativeChassis', 'TopicChassis']
 __all__ += ['MuJoCo']
+
+__all__ += [
+    "CameraFactory", "ROS2TopicFactory", "D435Factory", "RobinWFactory",
+    "HipnucFactory", "STM32Factory", "BlueSeaFactory", "ChassisFactory",
+]

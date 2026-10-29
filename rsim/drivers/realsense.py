@@ -1,4 +1,8 @@
 from pathlib import Path
+from dataclasses import dataclass, field, replace
+from typing import ClassVar
+from rsim.runtime.sharing import PortSpec, validate_component_ports
+from .configuration import fingerprint, freeze_fields, plain, native_setup_required, snapshot_setup, restore_setup
 from rsim.adapters.ros2 import Driver, RosSensor
 from rsim.adapters.ros2.arguments import RosArguments, effective_settings
 
@@ -78,64 +82,87 @@ class D435Source(RosSensor):
             )
 
 
-def D435(
-        *,
-        serial="",
-        stream="depth",
-        history=8,
-        depth_profile="640x480x15",
-        color_profile="640x480x15",
-        log_path=None,
-        transport=None,
-        parameters=None,
-        ros_args=None
-    ):
-    """Start RGB-D with arbitrary native ROS parameters and argv options.
+@dataclass(frozen=True)
+class D435Factory:
+    serial: str = ''
+    stream: str = 'depth'
+    history: int = 8
+    depth_profile: str = '640x480x15'
+    color_profile: str = '640x480x15'
+    log_path: str | None = None
+    parameters: object = None
+    ros_args: object = None
+    _prepared: str | None = field(default=None, repr=False)
+    FACTORY_VERSION: ClassVar[str] = 'd435-factory-v1'
 
-    Precedence: convenience options < parameters < ros_args assignments.
-    Only enabled image streams are collected. Application views must match the
-    effective serial/profiles/history, but need no driver-specific parameters.
-    """
-    setup = d435_setup(
-        serial, depth_profile, color_profile, parameters, ros_args
-        )
-    config = setup["config"]
-    if stream not in ("color", "depth"):
-        raise ValueError("stream must be color or depth")
-    if stream not in setup["enabled"]:
-        raise ValueError(
-            f"D435 {stream} stream is disabled by ROS parameters"
-            )
-    log_path = str(
-        Path(log_path).resolve()
-        ) if log_path is not None else None
+    def __post_init__(self):
+        if self.stream not in ('color', 'depth'):
+            raise ValueError('stream must be color or depth')
+        config = d435_config(self.serial, self.depth_profile, self.color_profile)
+        for name, value in config.items():
+            object.__setattr__(self, name, value)
+        if isinstance(self.ros_args, (str, bytes)):
+            raise TypeError('ros_args must be a sequence of argv strings, not a shell command')
+        freeze_fields(self)
+        RosArguments(plain(self.parameters))
+        self.port_specs(history=self.history)
 
-    def factory():
-        setup["options"].arguments(
-        )  # Verify parameter files before sharing a recipe.
-        return Bundle(
-            **{
-                name:
-                    D435Source(
-                        stream=name,
-                        history=history,
-                        log_path=log_path,
-                        _setup=setup
-                        )
-                for name in setup["enabled"]
-                },
-            hz=2 * max(
-                int(config[k].split("x")[-1])
-                for k in ("depth_profile", "color_profile")
-                ),
-            history=history
-            )
+    @staticmethod
+    def port_specs(*, history=8):
+        # The legacy shared protocol exports one Bundle. Its entries retain
+        # their individual image sample clocks; it is not a multi-port source.
+        return {'output': PortSpec(history_capacity=history)}
 
-    return d435_view(
-        config,
-        stream,
-        history,
-        factory=factory,
-        transport=transport,
-        provider_version=setup["options"].signature()
-        )
+    def prepare(self):
+        """Explicitly resolve native ROS args into a serializable data snapshot."""
+        setup = d435_setup(self.serial, self.depth_profile, self.color_profile,
+                           plain(self.parameters), self.ros_args)
+        if self.stream not in setup['enabled']:
+            raise ValueError(f'D435 {self.stream} stream is disabled by ROS parameters')
+        return replace(self, _prepared=snapshot_setup(setup))
+
+    def _setup(self):
+        native_setup_required(self.ros_args, self._prepared)
+        setup = (restore_setup(self._prepared) if self._prepared is not None else
+                 d435_setup(self.serial, self.depth_profile, self.color_profile,
+                            plain(self.parameters)))
+        if self.stream not in setup['enabled']:
+            raise ValueError(f'D435 {self.stream} stream is disabled by ROS parameters')
+        return setup
+
+    def fingerprint(self):
+        native_setup_required(self.ros_args, self._prepared)
+        return fingerprint(self)
+
+    def build(self):
+        setup = self._setup()
+        setup['options'].arguments()
+        config = setup['config']
+        specs = self.port_specs(history=self.history)
+        history = specs['output'].history_capacity
+        source = Bundle(**{
+            name: D435Source(stream=name, history=history,
+                             log_path=str(Path(self.log_path).resolve()) if self.log_path else None,
+                             _setup=setup)
+            for name in setup['enabled']},
+            hz=2 * max(int(config[key].split('x')[-1]) for key in ('depth_profile', 'color_profile')),
+            history=history)
+        validate_component_ports(source, specs)
+        return source
+
+    def shared(self, *, transport=None):
+        setup = self._setup()
+        return d435_view(setup['config'], self.stream, self.history,
+                         factory=self.build, transport=transport,
+                         provider_version=setup['options'].signature())
+
+    def device(self, *, transport=None):
+        return d435_view(self._setup()['config'], self.stream, self.history, transport=transport)
+
+
+def D435(*, serial='', stream='depth', history=8, depth_profile='640x480x15',
+         color_profile='640x480x15', log_path=None, transport=None,
+         parameters=None, ros_args=None):
+    """Compatibility constructor retaining explicit native-argument preparation."""
+    return D435Factory(serial, stream, history, depth_profile, color_profile,
+                        log_path, parameters, ros_args).prepare().shared(transport=transport)
