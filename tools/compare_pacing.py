@@ -1,4 +1,20 @@
-"""Paired, CPU-pinned pacing comparisons and explicitly scoped extension rates."""
+"""Paired, CPU-pinned pacing comparisons and explicitly scoped extension rates.
+
+Use ``paired --baseline BASE --candidate CANDIDATE --output REPORT`` for the
+nine-case matrix. Compare a baseline against itself first to expose host noise.
+The benchmark file must match in both source trees; each subprocess imports rsim
+from its own working directory and retains its raw report and command metadata.
+
+To investigate the loaded 1000 Hz case, add ``--scenario local-load-1000
+--seconds 5 --warmup-seconds 1 --repeat 5``. This calls the same measure function
+with a longer observation window and a discarded warmup. It records source-file
+hashes and GC collection counts; ``--disable-gc`` is a diagnostic variant only.
+Keep earlier results when changing the measurement procedure. Median limits do
+not establish confidence intervals, stable individual runs, or hardware latency.
+
+``extensions`` measures synthetic TickSource fanout and ReplaySource publication;
+it does not measure physics, rendering, recorder I/O or distributed lockstep.
+"""
 from __future__ import annotations
 
 import argparse
