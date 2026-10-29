@@ -4,6 +4,8 @@ from .errors import PortNotBound, ProviderDisconnected, ComponentError, HistoryM
 from .errors import PlatformUnavailable, StartupFailed, CleanupFailed
 from .demand import DemandSnapshot
 from .metronome import Metronome
+from .pacing import Pacer, PacerClosed, PacerReset, Tick, TickSource, TickSubscription, SignalPacer, RealTimePacer
+from .lockstep import StepContext, StepAck, SingleProcessStepper
 from .model import SampleId, Frame, Image, PointCloud
 from .signal import Signal
 from .clocks import ClockDomain, ClockTransform
@@ -16,3 +18,5 @@ __all__ = ['Component', 'PrimaryComponent', 'Sensor', 'Reference', 'ComponentErr
 
 __all__ += ["SampleId", "PortNotBound", "ProviderDisconnected"]
 __all__ += ['PlatformUnavailable', 'StartupFailed', 'CleanupFailed', 'DemandSnapshot']
+__all__ += ['Pacer', 'PacerClosed', 'PacerReset', 'Tick', 'TickSource', 'TickSubscription', 'SignalPacer', 'RealTimePacer']
+__all__ += ['StepContext', 'StepAck', 'SingleProcessStepper']

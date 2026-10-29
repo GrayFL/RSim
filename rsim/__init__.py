@@ -18,6 +18,18 @@ _EXPORTS = {
     'PrimaryComponent': ('rsim.core', 'PrimaryComponent'),
     'HistoryMiss': ('rsim.core', 'HistoryMiss'),
     'Metronome': ('rsim.core.metronome', 'Metronome'),
+    'Pacer': ('rsim.core.pacing', 'Pacer'),
+    'PacerClosed': ('rsim.core.pacing', 'PacerClosed'),
+    'PacerReset': ('rsim.core.pacing', 'PacerReset'),
+    'Tick': ('rsim.core.pacing', 'Tick'),
+    'TickSource': ('rsim.core.pacing', 'TickSource'),
+    'SignalPacer': ('rsim.core.pacing', 'SignalPacer'),
+    'RealTimePacer': ('rsim.core.pacing', 'RealTimePacer'),
+    'SingleProcessStepper': ('rsim.core.lockstep', 'SingleProcessStepper'),
+    'StepContext': ('rsim.core.lockstep', 'StepContext'),
+    'StepAck': ('rsim.core.lockstep', 'StepAck'),
+    'ReplaySource': ('rsim.components.replay', 'ReplaySource'),
+    'ReplaySample': ('rsim.components.replay', 'ReplaySample'),
     'Reference': ('rsim.core', 'Reference'),
     'Runtime': ('rsim.runtime.graph', 'Runtime'),
     'Sensor': ('rsim.core', 'Sensor'),
@@ -135,3 +147,5 @@ def __dir__():
 __all__ += ["SampleId", "PortNotBound", "ProviderDisconnected"]
 __all__ += ['SharedComponent', 'SharedProvider', 'PortSpec', 'serve_shared', 'describe_shared']
 __all__ += ['ComponentFactory', 'validate_component_ports', 'ChassisPortsDevice']
+__all__ += ['Pacer', 'PacerClosed', 'PacerReset', 'Tick', 'TickSource', 'SignalPacer', 'RealTimePacer']
+__all__ += ['SingleProcessStepper', 'StepContext', 'StepAck']

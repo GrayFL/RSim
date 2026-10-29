@@ -160,14 +160,29 @@ class Component:
     async def close(self):
         pass
 
-    def task(self, name: str, callback: Callable[[], Awaitable], *, hz: float):
+    def task(self, name: str, callback: Callable[[], Awaitable], *, hz: float | None = None, pacer=None):
         if self._runtime is None or self._closed:
             raise ComponentError("task registration requires an active runtime")
-        metronome = Metronome(hz)
-        async def run():
-            while True:
-                await metronome.tick()
-                await callback()
+        if (hz is None) == (pacer is None):
+            raise ValueError('task requires exactly one of hz or pacer')
+        if pacer is None:
+            # Preserve the existing fast path; watchdogs, services and command
+            # deadmen keep using this branch regardless of application pacing.
+            metronome = Metronome(hz)
+            async def run():
+                while True:
+                    await metronome.tick()
+                    await callback()
+        else:
+            if not callable(getattr(pacer, 'tick', None)) or not callable(getattr(pacer, 'aclose', None)):
+                raise TypeError('pacer must implement async tick() and aclose()')
+            async def run():
+                try:
+                    while True:
+                        await pacer.tick()
+                        await callback()
+                finally:
+                    await pacer.aclose()
         task = asyncio.create_task(run(), name=f"{type(self).__name__}:{name}")
         self._tasks.add(task)
         return task
