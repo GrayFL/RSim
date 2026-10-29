@@ -110,11 +110,31 @@ class Signal(Generic[T]):
         frame = Frame(data, stamp_ns, clock, time.time_ns() if received_ns is None else received_ns,
                       self._sequence, sample_id, dict(metadata or {}))
         async with self._condition:
+            # Sources opt into episode isolation via metadata. Keep the default
+            # path free of clock lookups and preserve publication/reader cursors.
+            # Importers call publish too, so reset isolation survives transport.
+            if frame.metadata and 'episode' in frame.metadata and self._history:
+                previous = self._history[-1].metadata
+                if (previous.get('episode') != frame.metadata['episode']
+                        or previous.get('session') != frame.metadata.get('session')):
+                    self._history.clear()
             if len(self._history) == self._history.maxlen:
                 self.history_evictions += 1
             self._history.append(frame)
             self._condition.notify_all()
         return frame
+
+    async def clear_history(self):
+        """Isolate a source reset/seek without reusing sequence/sample cursors.
+
+        Run at the source's serialized reset boundary. Existing Frame references
+        remain readable; timestamp queries only see the next episode's frames.
+        Waiters for a newer sequence are woken and continue waiting for data.
+        """
+        actual = self._resolved()
+        async with actual._condition:
+            actual._history.clear()
+            actual._condition.notify_all()
 
     async def get(self, *, timestamp_ns=None, clock=None, tolerance_ns=0, after=None,
                   timeout=None) -> Frame[T]:
