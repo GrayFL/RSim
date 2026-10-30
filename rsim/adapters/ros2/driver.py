@@ -6,6 +6,20 @@ from pathlib import Path
 from rsim.core import Component, ComponentError
 from .arguments import GeneratedParameters, RosArguments
 
+
+async def _join_transaction(task):
+    """Recover owned resources even when the caller is cancelled repeatedly."""
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                raise
+            cancelled = True
+    return task.result(), cancelled
+
+
 class Driver(Component):
     """Direct native executable launch, guarded against parent death on Linux."""
 
@@ -34,6 +48,7 @@ class Driver(Component):
         self.remappings = self.options.remappings
         self.process = self._log = None
         self._device_lease = None
+        self._close_task = None
 
     def configuration(self):
         return (super().configuration(), self.package, self.executable, self.options.signature(),
@@ -41,7 +56,7 @@ class Driver(Component):
 
     def __getstate__(self):
         state = super().__getstate__()
-        state.update(process=None, _log=None, _device_lease=None, _parameter_file=None)
+        state.update(process=None, _log=None, _device_lease=None, _parameter_file=None, _close_task=None)
         return state
 
     async def open(self):
@@ -50,6 +65,7 @@ class Driver(Component):
         executable = Path(
             get_package_prefix(self.package)
             ) / "lib" / self.package / self.executable
+        self._close_task = None
         try:
             args = self.options.arguments()  # Recheck user-owned file digests.
             self._device_lease = acquire_device(self.key)
@@ -60,11 +76,14 @@ class Driver(Component):
             if self.log_path:
                 Path(self.log_path).parent.mkdir(parents=True, exist_ok=True)
                 self._log = open(self.log_path, "a")
-            self.process = await asyncio.create_subprocess_exec(
+            launch = asyncio.create_task(asyncio.create_subprocess_exec(
                 sys.executable, "-m", "rsim.platforms.linux.exec", str(os.getpid()),
                 str(executable), *args,
                 stdout=self._log or asyncio.subprocess.DEVNULL,
-                stderr=self._log or asyncio.subprocess.DEVNULL)
+                stderr=self._log or asyncio.subprocess.DEVNULL))
+            self.process, cancelled = await _join_transaction(launch)
+            if cancelled:
+                raise asyncio.CancelledError
             self.task("driver-health", self.check, hz=20)
         except BaseException:
             await self.close()
@@ -77,6 +96,13 @@ class Driver(Component):
                 )
 
     async def close(self):
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_resources())
+        _, cancelled = await _join_transaction(self._close_task)
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _close_resources(self):
         try:
             if self.process is not None and self.process.returncode is None:
                 try:
@@ -86,7 +112,10 @@ class Driver(Component):
                 try:
                     await asyncio.wait_for(self.process.wait(), 5)
                 except TimeoutError:
-                    self.process.kill()
+                    try:
+                        self.process.kill()
+                    except ProcessLookupError:
+                        pass
                     await self.process.wait()
         finally:
             if self._log is not None:

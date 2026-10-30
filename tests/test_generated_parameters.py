@@ -125,6 +125,92 @@ def test_parallel_parameter_sessions_do_not_remove_each_others_files():
         second.close()
 
 
+def test_native_executable_failure_triggers_runtime_cleanup(tmp_path, monkeypatch):
+    from rsim.core import ComponentError
+    install_probe(tmp_path, monkeypatch)
+    executable = tmp_path / 'lib' / 'probe' / 'node'
+    executable.write_text(f'#!{sys.executable}\nraise SystemExit(7)\n')
+    driver = Driver('probe', 'node', key='exit:' + str(tmp_path), generated_parameters={'value': 1})
+    async def run():
+        async with Runtime(driver) as runtime:
+            path = driver._parameter_file.path
+            assert path.exists()
+            with pytest.raises(ComponentError):
+                await asyncio.wait_for(runtime.wait(), 5)
+            assert driver.process.returncode == 7
+            assert 'driver exited: 7' in str(driver._failure)
+        assert not path.parent.exists()
+        assert driver._device_lease is None
+        await driver.close()
+    asyncio.run(run())
+
+
+def test_cancelled_launch_recovers_and_closes_real_child_before_removing_yaml(tmp_path, monkeypatch):
+    install_probe(tmp_path, monkeypatch)
+    original = asyncio.create_subprocess_exec
+    driver = Driver('probe', 'node', key='cancel:' + str(tmp_path),
+                    generated_parameters={'output': str(tmp_path / 'received.json')})
+    async def run():
+        started, release = asyncio.Event(), asyncio.Event()
+        processes = []
+        async def delayed(*args, **kwargs):
+            process = await original(*args, **kwargs)
+            processes.append(process)
+            started.set()
+            await release.wait()
+            return process
+        monkeypatch.setattr(asyncio, 'create_subprocess_exec', delayed)
+        task = asyncio.create_task(driver.open())
+        await asyncio.wait_for(started.wait(), 5)
+        path = driver._parameter_file.path
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert processes[0].returncode is None and path.exists()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert processes[0].returncode is not None
+        assert not path.parent.exists()
+        assert driver._device_lease is None
+    asyncio.run(run())
+
+
+def test_repeated_close_cancellation_finishes_child_before_parameter_cleanup(tmp_path, monkeypatch):
+    install_probe(tmp_path, monkeypatch)
+    driver = Driver('probe', 'node', key='cancel-close:' + str(tmp_path),
+                    generated_parameters={'output': str(tmp_path / 'received.json')})
+
+    async def run():
+        async with Runtime(driver):
+            await wait_output(tmp_path / 'received.json')
+            path = driver._parameter_file.path
+            waiting, release = asyncio.Event(), asyncio.Event()
+            original = driver.process.wait
+            async def delayed_wait():
+                waiting.set()
+                await release.wait()
+                return await original()
+            monkeypatch.setattr(driver.process, 'wait', delayed_wait)
+            task = asyncio.create_task(driver.close())
+            await waiting.wait()
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert path.exists() and driver._device_lease is not None
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert driver.process.returncode is not None
+            assert not path.parent.exists() and driver._device_lease is None
+        await driver.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('values', [{'x': None}, {'x': [1, True]}, {'x': float('nan')}, {'': 1}])
 def test_invalid_generated_parameters_rejected_before_files(values):
     with pytest.raises((ValueError, TypeError)):
