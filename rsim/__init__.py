@@ -33,6 +33,12 @@ _EXPORTS = {
     'CommandIdentity': ('rsim.core.lockstep', 'CommandIdentity'),
     'CommandAccepted': ('rsim.core.lockstep', 'CommandAccepted'),
     'PhysicsAdvanced': ('rsim.core.lockstep', 'PhysicsAdvanced'),
+    'StageRequest': ('rsim.core.stages', 'StageRequest'),
+    'StageAck': ('rsim.core.stages', 'StageAck'),
+    'StageFailed': ('rsim.core.stages', 'StageFailed'),
+    'StageExecutor': ('rsim.core.stages', 'StageExecutor'),
+    'StageBarrier': ('rsim.core.stages', 'StageBarrier'),
+    'StageEndpoint': ('rsim.components.stages', 'StageEndpoint'),
     'ReplaySource': ('rsim.components.replay', 'ReplaySource'),
     'ReplaySample': ('rsim.components.replay', 'ReplaySample'),
     'Reference': ('rsim.core', 'Reference'),
@@ -156,6 +162,7 @@ __all__ += ['ComponentFactory', 'validate_component_ports', 'ChassisPortsDevice'
 __all__ += ['Pacer', 'PacerClosed', 'PacerReset', 'Tick', 'TickSource', 'SignalPacer', 'RealTimePacer']
 __all__ += ['SingleProcessStepper', 'StepContext', 'StepAck', 'CommandIdentity',
             'CommandAccepted', 'PhysicsAdvanced']
+__all__ += ['StageRequest', 'StageAck', 'StageFailed', 'StageExecutor', 'StageBarrier', 'StageEndpoint']
 __all__ += ['RatePacer']
 __all__ += ['FrameTickPacer']
 __all__ += ['SourceCommandBound']

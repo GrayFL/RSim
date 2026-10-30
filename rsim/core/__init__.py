@@ -7,6 +7,7 @@ from .metronome import Metronome
 from .pacing import Pacer, PacerClosed, PacerReset, Tick, TickSource, TickSubscription, SignalPacer, RealTimePacer, RatePacer, FrameTickPacer
 from .lockstep import (StepContext, StepAck, CommandIdentity, CommandAccepted,
                        PhysicsAdvanced, SingleProcessStepper)
+from .stages import StageRequest, StageAck, StageFailed, StageExecutor, StageBarrier
 from .model import SampleId, Frame, Image, PointCloud
 from .signal import Signal
 from .clocks import ClockDomain, ClockTransform
@@ -23,6 +24,7 @@ __all__ += ['PlatformUnavailable', 'StartupFailed', 'CleanupFailed', 'DemandSnap
 __all__ += ['Pacer', 'PacerClosed', 'PacerReset', 'Tick', 'TickSource', 'TickSubscription', 'SignalPacer', 'RealTimePacer']
 __all__ += ['StepContext', 'StepAck', 'CommandIdentity', 'CommandAccepted',
             'PhysicsAdvanced', 'SingleProcessStepper']
+__all__ += ['StageRequest', 'StageAck', 'StageFailed', 'StageExecutor', 'StageBarrier']
 __all__ += ['RatePacer']
 __all__ += ['FrameTickPacer']
 __all__ += ['SourceCommandBound']

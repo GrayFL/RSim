@@ -61,7 +61,33 @@ await runner.step()
 
 阶段间显式复核主机 deadline，避免阻塞回调或吞掉取消后继续接受命令。停止/reset 是有预算的独立事务，重复取消也先等待事务结束再向调用方传播。它无法抢占同步阻塞或保证硬实时；实际执行器仍需自己的 host deadline 检查。
 
-回归入口：`tests/test_pacing.py`、`tests/test_source_pacing.py`、`tests/test_replay_lockstep.py`、`tests/test_strict_lockstep.py`、`tests/test_episode_history.py`、`tests/test_epoch_forwarding.py`。软件性能可用 `python -m tools.benchmark_pacing --output assets/pacing.json` 测量；结果包含多频率、组件数、数据大小、进程模式和负载。跨进程的观察采用 latest，parent CPU 不冒充整机/所有 worker 的 CPU。
+## 跨进程计算阶段
+
+`StageRequest(context, task_id, input_revision)` 和 `StageAck(context, task_id, input_revision, started_ns, finished_ns, result=None)` 提供 JSON `to_dict/from_mapping`。revision 是应用定义的非空字符串，可编码 map/mission revision 和上游发布身份；RSim 不解释其领域含义。ACK 的开始/结束时间使用 host monotonic ns，result 是小型 JSON 输出摘要。它确认该计算阶段完成，仍不等于命令接纳或物理推进。
+
+继承 `rsim.StageEndpoint`，声明 dependencies/inputs 并实现 async `compute(request)`。回调必须等待指定的真实输入快照、检查完整 context/revision，完成计算并发布输出后再返回摘要。不同 DDS 端口的到达顺序不保证一致，因此不能因为管理请求先到就读取任意 latest。`stage_request` 是普通 CommandSink，支持 ProcessPlacement；`run_stage`、`describe_stage`、`reset_stage` 都通过这个声明端口，普通 Python 方法没有被变成隐式 RPC。
+
+Endpoint 在 open 创建 worker-local `StageExecutor(task_id, callback, timeout=5., ack_capacity=32)`。相同 context/task/revision 的重试返回原完成结果，计算不会重做；同一步换 revision、跳步、淘汰后重发旧步都拒绝。缓存有界，高水位仍阻止旧步再次执行。失败或超时使此 generation ABORTED，查询不会把失败当成成功 ACK。显式 `reset_stage(new_context)` 淘汰缓存；new_context 必须来自源的新 session/episode 且 step zero。同 generation 的 reset 重试只返回已有状态，不会清除已完成计算或恢复 ABORTED。算法自身的 RNG/cache reset 仍由领域组件负责。
+
+协调器显式指定阶段次序，并可在严格 Stepper 的 compute 回调内执行：
+
+```python
+from rsim import StageBarrier, StageRequest
+
+barrier = StageBarrier(('plan', 'execute'), context=source_context)
+barrier.begin(source_context)
+planned = await barrier.call(planner.stage_request,
+    StageRequest(source_context, 'plan', planning_revision))
+executed = await barrier.call(executor.stage_request,
+    StageRequest(source_context, 'execute', execution_revision))
+acks = barrier.complete()
+```
+
+每个 call 验证 ACK 的 context/task/revision 完全吻合。`timeout` 是每个阶段的主机预算，`retries` 限定丢响应后的相同请求重试次数，`request_ttl` 限定管理命令租期。重试只更换传输 envelope，不更换逻辑请求或延长已经开始的计算期限。全部阶段完成后，调用方才接受命令并请求固定物理子步；资源 DAG 不决定这个顺序。屏障超时/取消/worker 故障后 ABORTED，须停止 owner，再 reset 源和各 endpoint，最后 `barrier.reset(new_context)`。不能将 worker 的 DDS 收包当成计算完成。
+
+`StageFailed.reason='stale_context'` 表示逻辑 source context 过旧，与命令通道 controller epoch 的 `retired` 不同。管理端口拒绝一个旧上下文后，仍允许同一客户端提交新上下文；真正已退役的运动控制器继续被拒绝。`StageExecutor` 与 `StageBarrier` 不可序列化，必须在所属 worker/coordinator 内创建。诊断提供有限 ACK 缓存、high_water、实际阶段耗时，以及 barrier 的调用耗时/尝试次数。原始重放、单进程 ACK 与 Stage 协议测试分别验证各自边界；通用阶段测试不能替代应用的跨进程导航验收。
+
+回归入口：`tests/test_pacing.py`、`tests/test_source_pacing.py`、`tests/test_replay_lockstep.py`、`tests/test_strict_lockstep.py`、`tests/test_stages.py`、`tests/test_episode_history.py`、`tests/test_epoch_forwarding.py`。软件性能可用 `python -m tools.benchmark_pacing --output assets/pacing.json` 测量；结果包含多频率、组件数、数据大小、进程模式和负载。跨进程的观察采用 latest，parent CPU 不冒充整机/所有 worker 的 CPU。
 # Source-time command intervals
 
 `CommandEnvelope` accepts an optional `source_bound=SourceCommandBound(context,

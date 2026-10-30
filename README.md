@@ -102,6 +102,8 @@ BlueSea 2D 雷达可通过 `rsim.drivers.BlueSea` 启动外部 ROS2 驱动，同
 
 `build()` 构造未运行的本地组件，`shared()` 构造共享启动描述，Device 只连接。完整声明在启动前及 ready 前校验；通用消费者可不安装引擎和 MujocoSim。见 [公共底盘端口](docs/chassis-ports.md)、[内置工厂](docs/factories.md)、[MuJoCo 提供端](docs/mujoco.md) 和 [0.4 迁移说明](docs/migration-v4.md)。
 
+环境时间调度与严格锁步均需显式启用。严格 `SingleProcessStepper` 分别验证 `CommandAccepted` 与 `PhysicsAdvanced`；跨进程计算可用 `StageEndpoint` 和 `StageBarrier` 按明确次序等待绑定 context、task 和输入 revision 的 `StageAck`。重复请求缓存计算结果，失败中止并要求同步查询或新 generation reset；源 tick、DDS 收包和资源 DAG 都不能代替计算完成确认。接口及限制见 [节奏、回放与显式步进](docs/pacing.md)。
+
 复杂装配使用 `OdometryFactory`、`ScanOdometryFactory`、`NativeChassisFactory`、`TopicChassisFactory` 和 `MappingFactory`。它们解析冻结配置，在 `build(...)` 注入本地依赖，或由共享 worker 重建输入；运行期生成参数文件由 Driver 管理，持久地图资产独立持有。配置及接口迁移见 [复杂 Factory 生命周期](docs/complex-factories.md)。
 
 ```python
