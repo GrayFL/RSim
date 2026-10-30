@@ -218,18 +218,29 @@ class CommandSink(Generic[T]):
             # A rejected request must not kill the metered service or clear a
             # valid controller's lease. Return the error as an ordinary response.
             armed = self._armed
+            previous_owner, previous_deadline = self.guard.owner, self.guard.deadline_ns
+            was_retired = previous_owner in self.guard.retired
+            validated = False
             try:
                 self.guard.accept(command)
+                validated = True
                 self._armed = True
                 return await self._invoke(self.apply, command)
             except CommandRejected as error:
                 self._armed = armed
-                if (error.reason == 'retired' and self.guard.owner
-                        == (command.controller_id, command.controller_epoch)):
-                    # A remote owner may retire a session after our proxy
-                    # locally accepted it. Do not keep its rejected lease and
-                    # exclude the explicitly fresh controller epoch.
-                    self.guard.retire()
+                if validated:
+                    # Payload/source checks happen at the final owner. Failure
+                    # there cannot lengthen an earlier accepted motion lease or
+                    # retire a different controller. Retain the sequence cursor
+                    # so a rejected request cannot be replayed as a fresh one.
+                    self.guard.owner, self.guard.deadline_ns = previous_owner, previous_deadline
+                    if not was_retired:
+                        self.guard.retired.discard(previous_owner)
+                    if error.reason == 'retired':
+                        identity = command.controller_id, command.controller_epoch
+                        self.guard.retired.add(identity)
+                        if self.guard.owner == identity:
+                            self.guard.retire()
                 return error
 
     async def _safe(self):

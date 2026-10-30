@@ -65,6 +65,31 @@ def test_default_envelope_keeps_existing_wire_fields(tmp_path):
     store.close()
 
 
+def test_rejected_source_bound_cannot_extend_an_existing_motion_lease():
+    async def run():
+        actuator = Component()
+        applied = []
+        def apply(command):
+            if command.source_bound is not None:
+                raise CommandRejected('provider has no matching source clock')
+            applied.append(command.value)
+        sink = CommandSink(actuator, 'velocity', apply, fallback=VelocityCommand(), hz=200)
+        async with Runtime(sink):
+            original = CommandEnvelope(VelocityCommand(.2), 'nav', 'epoch', 1,
+                                       time.monotonic_ns() + 100_000_000)
+            await sink.set(original)
+            invalid = replace(original, sequence=2, deadline_ns=time.monotonic_ns() + 450_000_000,
+                source_bound=SourceCommandBound(StepContext('other', 0, 0), 'simulation', 10))
+            with pytest.raises(CommandRejected, match='source clock'):
+                await sink.set(invalid)
+            assert sink.guard.owner == ('nav', 'epoch')
+            assert sink.guard.deadline_ns == original.deadline_ns
+            await asyncio.sleep(.13)
+            assert applied == [VelocityCommand(.2), VelocityCommand()]
+            assert sink.guard.sequences['nav', 'epoch'] == 2
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('placed', [False, True])
 def test_mux_connect_and_transport_preserve_original_source_bound(placed):
     async def run():
