@@ -546,21 +546,20 @@ def run(args):
                 process.kill()
                 code = process.wait(timeout=5)
             sampler.sample()
-        alive = lambda: [p for p in sampler.known.values() if p.is_running() and p.status() != 'zombie']
         # Leased supervisors can finish just after their parent. Observe that
         # bounded teardown without pretending a normal parent exit proves it.
         cleanup_deadline = time.monotonic()+5
-        survivors = alive()
+        survivors = sampler.living_pids()
         while survivors and time.monotonic()<cleanup_deadline:
             sampler.sample()
             time.sleep(.02)
-            survivors = alive()
+            survivors = sampler.living_pids()
         write_json(directory/'resources-raw.json',sampler.samples)
         enrich(output,sampler,command,code)
         measurement = json.loads(output.read_text())
         outcome = dict(entry,output=str(output),exitcode=code,elapsed_s=time.monotonic()-started,
                        resource_coverage_complete=measurement['resource_coverage_complete'],
-                       surviving_pids=[p.pid for p in survivors])
+                       surviving_pids=survivors)
         manifest['runs'].append(outcome)
         write_json(args.output/'manifest.json',manifest)
         print(json.dumps(outcome),flush=True)

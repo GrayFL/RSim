@@ -70,6 +70,16 @@ class ProcessTreeSampler:
     def report(self, start=None, end=None):
         return resource_window(self.samples, start, end)
 
+    def living_pids(self):
+        living = []
+        for pid, process in self.known.items():
+            try:
+                if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                    living.append(pid)
+            except psutil.Error:
+                pass  # Exit can race is_running/status; the process is gone.
+        return living
+
 
 def resource_window(samples, start=None, end=None):
     samples = [row for row in samples if (start is None or row['host_ns'] >= start)
