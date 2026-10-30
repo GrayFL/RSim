@@ -106,6 +106,8 @@ BlueSea 2D 雷达可通过 `rsim.drivers.BlueSea` 启动外部 ROS2 驱动，同
 
 复杂装配使用 `OdometryFactory`、`ScanOdometryFactory`、`NativeChassisFactory`、`TopicChassisFactory` 和 `MappingFactory`。它们解析冻结配置，在 `build(...)` 注入本地依赖，或由共享 worker 重建输入；运行期生成参数文件由 Driver 管理，持久地图资产独立持有。配置及接口迁移见 [复杂 Factory 生命周期](docs/complex-factories.md)。
 
+开发性能矩阵覆盖默认调度、Pacer/IPC、两种提供端的自然/加速导航、单进程/跨进程锁步及复杂 Factory。原始数据、完整进程资源统计与复现方法见 [性能测量](docs/performance.md)。
+
 ```python
 from rsim import Connect, CommandMux, CommandInput, VelocityCommand
 
