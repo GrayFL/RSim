@@ -200,6 +200,8 @@ class Ros1Bridge(Component):
         return await self._request("topics")
 
     async def _publish(self, topic, message_type, data, envelope=None):
+        if envelope is not None and envelope.source_bound is not None:
+            return CommandRejected('ROS1 bridge cannot validate a source-time command bound')
         fields = {}
         if message_type == "geometry_msgs/Twist":
             if envelope is None:
@@ -326,6 +328,8 @@ class Chassis(Component):
                                  stamp_ns=time.monotonic_ns(), clock="host:monotonic")
 
     async def _apply_velocity(self, envelope):
+        if envelope.source_bound is not None:
+            raise CommandRejected('ROS1 chassis cannot validate a source-time command bound')
         value = envelope.value
         if not isinstance(value, VelocityCommand):
             raise CommandRejected("velocity sink requires VelocityCommand")

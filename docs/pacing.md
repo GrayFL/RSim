@@ -45,3 +45,28 @@ Pacer 提供 async `tick()` 与 `aclose()`。每个任务在所属 worker 的 `o
 阶段间显式复核主机 deadline，避免阻塞回调或吞掉取消后继续接受命令。停止/reset 是有预算的独立事务，重复取消也先等待事务结束再向调用方传播。它无法抢占同步阻塞或保证硬实时；实际执行器仍需自己的 host deadline 检查。
 
 回归入口：`tests/test_pacing.py`、`tests/test_source_pacing.py`、`tests/test_replay_lockstep.py`、`tests/test_episode_history.py`、`tests/test_epoch_forwarding.py`。软件性能可用 `python -m tools.benchmark_pacing --output assets/pacing.json` 测量；结果包含多频率、组件数、数据大小、进程模式和负载。跨进程的观察采用 latest，parent CPU 不冒充整机/所有 worker 的 CPU。
+# Source-time command intervals
+
+`CommandEnvelope` accepts an optional `source_bound=SourceCommandBound(context,
+clock, deadline_ns)`. This is an additional immutable source-time limit; its
+original host-monotonic `deadline_ns` still applies independently. The bound's
+`StepContext(session, episode, step_index)` identifies the observation used to
+prove the command interval. A delayed consumer must not move that interval's end
+to the provider's current time at acceptance.
+
+The source owner calls `bound.check(current_context, clock=source_clock,
+stamp_ns=proposed_interval_end_ns)` before accepting and before each physical
+interval. Old generations, future observations, wrong clocks and intervals
+crossing the source deadline are rejected. Equality at the interval end is
+allowed. Applying the host deadline, model constraints, permissions and fallback
+remains the provider's responsibility. A provider without the specified source
+context must reject the bounded command. This is validity metadata, not a
+command-acceptance or physical-advance acknowledgement.
+
+`Connect` and the closed-schema shared transport preserve the bound. `CommandMux`
+may choose a new controller identity but keeps the selected source bound and
+never extends the original host deadline. Adapters changing payloads should use
+`dataclasses.replace(envelope, value=converted_value)` so they retain both limits.
+The legacy five-argument envelope remains valid with `source_bound=None`; its
+wire representation retains the five existing fields. A nonempty bound requires
+both peers and the final provider to support this extension.

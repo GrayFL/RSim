@@ -27,8 +27,10 @@ current_store = ContextVar("rsim_shared_store", default=None)
 def _records():
     # Closed schema: a descriptor cannot import or instantiate arbitrary code.
     from rsim.core.model import Frame, SampleId
-    from rsim.core.commands import CommandEnvelope, VelocityCommand
-    return {cls.__name__: cls for cls in (Frame, SampleId, CommandEnvelope, VelocityCommand)}
+    from rsim.core.commands import CommandEnvelope, VelocityCommand, SourceCommandBound
+    from rsim.core.lockstep import StepContext
+    return {cls.__name__: cls for cls in (Frame, SampleId, CommandEnvelope, VelocityCommand,
+                                         SourceCommandBound, StepContext)}
 
 
 def _is_pose(data):
@@ -199,9 +201,12 @@ class SharedStore:
             return {"type": "image", "pixels": self._encode(data.pixels, directory),
                     "encoding": data.encoding, "frame_id": data.frame_id}
         if type(data) in _records().values():
-            return {"type": "record", "name": type(data).__name__,
-                    "fields": {field.name: self._encode(getattr(data, field.name), directory)
-                               for field in fields(data)}}
+            name = type(data).__name__
+            values = {field.name: self._encode(getattr(data, field.name), directory)
+                      for field in fields(data)
+                      if not (name == 'CommandEnvelope' and field.name == 'source_bound'
+                              and data.source_bound is None)}
+            return {"type": "record", "name": name, "fields": values}
         if isinstance(data, dict):
             if not all(isinstance(k, str) for k in data):
                 raise TypeError("shared dictionary keys must be strings")

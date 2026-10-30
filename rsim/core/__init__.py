@@ -10,7 +10,8 @@ from .model import SampleId, Frame, Image, PointCloud
 from .signal import Signal
 from .clocks import ClockDomain, ClockTransform
 from .commands import (CommandSink, CommandEnvelope, VelocityCommand, VelocityCommandEnvelope,
-                       CommandGuard, CommandRejected, CommandInput, CommandMux, Arbiter, Connect)
+                       CommandGuard, CommandRejected, CommandInput, CommandMux, Arbiter, Connect,
+                       SourceCommandBound)
 from .compose import Bundle, Map
 from .sync import Synchronizer, TimeJoin
 
@@ -22,3 +23,4 @@ __all__ += ['Pacer', 'PacerClosed', 'PacerReset', 'Tick', 'TickSource', 'TickSub
 __all__ += ['StepContext', 'StepAck', 'SingleProcessStepper']
 __all__ += ['RatePacer']
 __all__ += ['FrameTickPacer']
+__all__ += ['SourceCommandBound']

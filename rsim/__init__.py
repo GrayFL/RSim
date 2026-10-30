@@ -43,6 +43,7 @@ _EXPORTS = {
     'TimeJoin': ('rsim.core.sync', 'TimeJoin'),
     'CommandSink': ('rsim.core.commands', 'CommandSink'),
     'CommandEnvelope': ('rsim.core.commands', 'CommandEnvelope'),
+    'SourceCommandBound': ('rsim.core.commands', 'SourceCommandBound'),
     'VelocityCommand': ('rsim.core.commands', 'VelocityCommand'),
     'VelocityCommandEnvelope': ('rsim.core.commands', 'VelocityCommandEnvelope'),
     'CommandGuard': ('rsim.core.commands', 'CommandGuard'),
@@ -153,3 +154,4 @@ __all__ += ['Pacer', 'PacerClosed', 'PacerReset', 'Tick', 'TickSource', 'SignalP
 __all__ += ['SingleProcessStepper', 'StepContext', 'StepAck']
 __all__ += ['RatePacer']
 __all__ += ['FrameTickPacer']
+__all__ += ['SourceCommandBound']

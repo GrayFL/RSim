@@ -12,6 +12,7 @@ import uuid
 from .component import Component, PrimaryComponent
 from .errors import ComponentError, PortNotBound
 from .signal import as_signal
+from .lockstep import StepContext
 
 T = TypeVar("T")
 
@@ -27,6 +28,48 @@ class VelocityCommand:
 
 
 @dataclass(frozen=True)
+class SourceCommandBound:
+    """Additional validity bound in an explicitly identified source clock.
+
+    This never replaces the envelope's host-monotonic deadline. The final
+    source owner calls ``check`` before acceptance and before advancing to the
+    proposed source stamp. Forwarders preserve the original bound verbatim.
+    A provider without this source context cannot apply such a command safely.
+    """
+    context: StepContext
+    clock: str
+    deadline_ns: int
+
+    def __post_init__(self):
+        context = self.context
+        if (not isinstance(context, StepContext) or not isinstance(context.session, str)
+                or not context.session or type(context.episode) is not int or context.episode < 0
+                or type(context.step_index) is not int or context.step_index < 0):
+            raise ValueError('source bound requires a valid source context')
+        if not isinstance(self.clock, str) or not self.clock:
+            raise ValueError('source bound requires an explicit clock')
+        if type(self.deadline_ns) is not int:
+            raise ValueError('source deadline must be integer nanoseconds')
+
+    def check(self, context, *, clock, stamp_ns):
+        """Reject stale generations, future observations or an expired interval.
+
+        ``stamp_ns`` is the end of the proposed physical interval, inclusive.
+        The provider retains responsibility for its host deadline and ownership.
+        """
+        if not isinstance(context, StepContext):
+            raise CommandRejected('provider has no source context')
+        if (context.session, context.episode) != (self.context.session, self.context.episode):
+            raise CommandRejected('command source generation retired', reason='retired')
+        if clock != self.clock or context.step_index < self.context.step_index:
+            raise CommandRejected('command source clock or step does not match provider')
+        if type(stamp_ns) is not int:
+            raise CommandRejected('source interval end must be integer nanoseconds')
+        if stamp_ns > self.deadline_ns:
+            raise CommandRejected('command source interval expired', reason='expired')
+
+
+@dataclass(frozen=True)
 class CommandEnvelope(Generic[T]):
     """Deadline uses the provider's monotonic nanosecond clock.
 
@@ -39,6 +82,7 @@ class CommandEnvelope(Generic[T]):
     controller_epoch: str
     sequence: int
     deadline_ns: int
+    source_bound: SourceCommandBound | None = None
 
 
 VelocityCommandEnvelope = CommandEnvelope
@@ -70,7 +114,9 @@ class CommandGuard:
         if (not isinstance(command, CommandEnvelope) or not isinstance(command.controller_id, str)
                 or not command.controller_id or not isinstance(command.controller_epoch, str)
                 or not command.controller_epoch or not isinstance(command.sequence, int)
-                or command.sequence <= 0 or not isinstance(command.deadline_ns, int)):
+                or command.sequence <= 0 or not isinstance(command.deadline_ns, int)
+                or (command.source_bound is not None
+                    and not isinstance(command.source_bound, SourceCommandBound))):
             raise CommandRejected("invalid command envelope")
         if command.deadline_ns <= now:
             raise CommandRejected("command expired", reason="expired")
@@ -312,20 +358,22 @@ class CommandMux(PrimaryComponent):
             self._seen[name] = frame.sequence
             deadline = now + int(item.timeout * 1e9) - max(0, time.time_ns() - frame.received_ns)
             value = frame.data
+            source_bound = None
             if isinstance(value, CommandEnvelope):
                 deadline = min(deadline, value.deadline_ns)
+                source_bound = value.source_bound
                 value = value.value
-            self._values[name] = (value, deadline)
+            self._values[name] = (value, deadline, source_bound)
         candidates = [name for name in self.sources if name in self._values
                       and self._values[name][1] > now
                       and (self.manual is None or self.manual == name)]
         selected = max(candidates, key=lambda name: self.sources[name].priority, default=None)
         self.selected = selected
-        value, deadline = (self._values[selected] if selected is not None
-                           else (self.fallback, now + int(self.ttl * 1e9)))
+        value, deadline, source_bound = (self._values[selected] if selected is not None
+                           else (self.fallback, now + int(self.ttl * 1e9), None))
         self._command_sequence += 1
         envelope = CommandEnvelope(value, self._identity, self._epoch, self._command_sequence,
-                                   min(deadline, now + int(self.ttl * 1e9)))
+                                   min(deadline, now + int(self.ttl * 1e9)), source_bound)
         await self.output.publish(envelope, stamp_ns=now, clock="host:monotonic")
 
 
