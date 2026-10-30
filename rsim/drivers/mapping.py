@@ -133,7 +133,8 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
         from rsim.adapters.ros2.scan_odometry import ScanOdometry
         if 'body_scan' not in geometry:
             raise ValueError('scan odometry requires an explicit body_scan mount')
-        scan2d = ScanOdometry(inputs.ros, prefix=prefix, mount=geometry['body_scan'],
+        from .scan_odometry import ScanOdometryFactory
+        scan2d = ScanOdometry(inputs.ros, prefix=prefix, mount=geometry['body_scan'], ports=ScanOdometryFactory.port_specs(),
                              directory=directory, parameters=scan2d_parameters,
                              odom_frame=frames['odom'] if fusion_parameters is not None else None)
     native_lio = {

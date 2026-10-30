@@ -25,11 +25,8 @@ class ScanOdometry(Component):
     Output is prefix/scan2d/odom in the base frame. The private TF tree avoids
     claiming ownership of the application's global odometry transform.
     """
-    def __init__(self, ros, *, prefix, mount, directory, parameters=None,
-                 wheel_topic=None, scan_topic=None, odom_frame=None, ports=None):
-        if ports is None:
-            from rsim.drivers.scan_odometry import ScanOdometryFactory
-            ports = ScanOdometryFactory.port_specs()
+    def __init__(self, ros, *, prefix, mount, directory, ports, parameters=None,
+                 wheel_topic=None, scan_topic=None, odom_frame=None):
         from graphmap.pose import Pose
         self.ros, self.prefix = ros, prefix
         self.mount = Pose(**mount) if isinstance(mount, dict) else mount

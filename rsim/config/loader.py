@@ -4,35 +4,7 @@ from pathlib import Path
 from rsim.core import Component
 from .geometry import Mount
 from .assembly import MountedSensor, SensorAssembly, SensorRig
-
-def read_config(path):
-    """Load safe YAML or TOML, requiring unique string keys."""
-    path = Path(path).expanduser()
-    if path.suffix.lower() == '.toml':
-        import tomllib
-        with path.open('rb') as file:
-            return tomllib.load(file)
-    import yaml
-
-    class UniqueLoader(yaml.SafeLoader):
-        pass
-
-    def mapping(loader, node, deep=False):
-        loader.flatten_mapping(node)
-        result = {}
-        for key_node, value_node in node.value:
-            key = loader.construct_object(key_node, deep=deep)
-            if not isinstance(key, str) or key in result:
-                raise ValueError(f"duplicate or non-string YAML key: {key!r}")
-            result[key] = loader.construct_object(value_node, deep=deep)
-        return result
-
-    UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
-    with path.open() as file:
-        config = yaml.load(file, Loader=UniqueLoader)
-    if not isinstance(config, dict):
-        raise ValueError("configuration must be a mapping")
-    return config
+from rsim.drivers.configuration import read_config
 
 
 def _factories(providers):

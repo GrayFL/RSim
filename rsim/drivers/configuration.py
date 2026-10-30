@@ -140,7 +140,6 @@ def mount_data(value, *, name='mount', base=None):
 
 def from_config(cls, path, *, section, overrides=None, path_fields=()):
     """Strict, portable recipe loading; this helper never constructs a graph."""
-    from rsim.config.loader import read_config
     path = Path(path).expanduser().resolve(strict=True)
     document = read_config(path)
     if section in document:
@@ -171,6 +170,36 @@ def from_config(cls, path, *, section, overrides=None, path_fields=()):
             if current.get(names[-1]) is not None:
                 current[names[-1]] = str((path.parent / Path(current[names[-1]]).expanduser()).resolve())
     return cls(**settings)
+
+
+def read_config(path):
+    """Safely parse pure recipe data; no adapter or application imports."""
+    path = Path(path).expanduser()
+    if path.suffix.lower() == '.toml':
+        import tomllib
+        with path.open('rb') as file:
+            return tomllib.load(file)
+    import yaml
+
+    class UniqueLoader(yaml.SafeLoader):
+        pass
+
+    def mapping(loader, node, deep=False):
+        loader.flatten_mapping(node)
+        result = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if not isinstance(key, str) or key in result:
+                raise ValueError(f'duplicate or non-string YAML key: {key!r}')
+            result[key] = loader.construct_object(value_node, deep=deep)
+        return result
+
+    UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+    with path.open() as file:
+        config = yaml.load(file, Loader=UniqueLoader)
+    if not isinstance(config, dict):
+        raise ValueError('configuration must be a mapping')
+    return config
 
 
 def source_reference(value, *, kind, default_topic=None, history=512):

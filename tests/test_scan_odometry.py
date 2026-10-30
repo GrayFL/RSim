@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from rsim.adapters.ros2.scan_odometry import ScanOdometry, scan_interval
+from rsim.drivers.scan_odometry import ScanOdometryFactory
 
 
 def scan(stamp=1., frame='laser', increment=.01):
@@ -22,7 +23,7 @@ def test_scan_interval_preserves_last_beam_and_rejects_unknown_timing():
 def component(tmp_path):
     from rsim.adapters.ros2 import RosContext
     from graphmap.pose import Pose
-    return ScanOdometry(RosContext(), prefix='/rsim/test', directory=tmp_path,
+    return ScanOdometry(RosContext(), prefix='/rsim/test', directory=tmp_path, ports=ScanOdometryFactory.port_specs(),
         mount=Pose(position=[.1,.2,.3], rotation=[0,0,10], degrees=True,
                    wrd_frame='base_footprint', ego_frame='laser'))
 
@@ -52,7 +53,7 @@ def test_private_tf_and_native_frame_contract(tmp_path):
     assert params['odom_frame_id']==c.odom_frame
     assert params['deskewing'] and not params['publish_tf']
     with pytest.raises(ValueError,match='owns'):
-        ScanOdometry(c.ros,prefix=c.prefix,mount=c.mount,directory=tmp_path,
+        ScanOdometry(c.ros,prefix=c.prefix,mount=c.mount,directory=tmp_path, ports=ScanOdometryFactory.port_specs(),
                      parameters={'frame_id':'laser'})
 
 

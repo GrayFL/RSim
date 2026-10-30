@@ -35,12 +35,9 @@ class InertialOdometry(Component):
     """
     def __init__(self, wheel, imu, *, ros=None, scan=None, prefix='/rsim/odometry',
                  world_frame='odom_fused', body_frame='base_footprint', directory,
-                 parameters=None, input_timeout=.3, history=512,
+                 ports, parameters=None, input_timeout=.3,
                  use_orientation=True, use_acceleration=True, lateral_acceleration=False,
-                 pose_history=None, covariance_history=None, ports=None):
-        if ports is None:
-            from rsim.drivers.odometry import OdometryFactory
-            ports = OdometryFactory.port_specs(history=history)
+                 pose_history=None, covariance_history=None):
         if not prefix.startswith('/') or prefix == '/' or not world_frame or not body_frame or world_frame == body_frame:
             raise ValueError('odometry requires a namespace and distinct world/body frames')
         if not np.isfinite(input_timeout) or input_timeout <= 0:
