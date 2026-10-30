@@ -25,6 +25,8 @@ _EXPORTS = {
     'TickSource': ('rsim.core.pacing', 'TickSource'),
     'SignalPacer': ('rsim.core.pacing', 'SignalPacer'),
     'RealTimePacer': ('rsim.core.pacing', 'RealTimePacer'),
+    'RatePacer': ('rsim.core.pacing', 'RatePacer'),
+    'FrameTickPacer': ('rsim.core.pacing', 'FrameTickPacer'),
     'SingleProcessStepper': ('rsim.core.lockstep', 'SingleProcessStepper'),
     'StepContext': ('rsim.core.lockstep', 'StepContext'),
     'StepAck': ('rsim.core.lockstep', 'StepAck'),
@@ -149,3 +151,5 @@ __all__ += ['SharedComponent', 'SharedProvider', 'PortSpec', 'serve_shared', 'de
 __all__ += ['ComponentFactory', 'validate_component_ports', 'ChassisPortsDevice']
 __all__ += ['Pacer', 'PacerClosed', 'PacerReset', 'Tick', 'TickSource', 'SignalPacer', 'RealTimePacer']
 __all__ += ['SingleProcessStepper', 'StepContext', 'StepAck']
+__all__ += ['RatePacer']
+__all__ += ['FrameTickPacer']

@@ -178,6 +178,12 @@ class CommandSink(Generic[T]):
                 return await self._invoke(self.apply, command)
             except CommandRejected as error:
                 self._armed = armed
+                if (error.reason == 'retired' and self.guard.owner
+                        == (command.controller_id, command.controller_epoch)):
+                    # A remote owner may retire a session after our proxy
+                    # locally accepted it. Do not keep its rejected lease and
+                    # exclude the explicitly fresh controller epoch.
+                    self.guard.retire()
                 return error
 
     async def _safe(self):
@@ -217,15 +223,23 @@ class Connect(Component):
         self.ttl, self.hz = ttl, hz
         self.controller_id = controller_id or "connect:" + uuid.uuid4().hex
         self.epoch, self.previous, self.sequence = None, 0, 0
+        self.pacer = None
         self.dropped = 0
 
     async def open(self):
         self.epoch, self.previous, self.sequence = uuid.uuid4().hex, 0, 0
         self.dropped = 0
-        self.task("connect", self.forward, hz=self.hz)
+        if self.hz is None:
+            from .pacing import SignalPacer
+            self.pacer = SignalPacer(self.source)
+            self.task("connect", self.forward, pacer=self.pacer)
+        else:
+            self.pacer = None
+            self.task("connect", self.forward, hz=self.hz)
 
     async def forward(self):
-        frame = await self.source.get(after=self.previous)
+        frame = (self.pacer.last_frame if self.pacer is not None
+                 else await self.source.get(after=self.previous))
         self.previous = frame.sequence
         command = frame.data
         if not isinstance(command, CommandEnvelope):
