@@ -6,6 +6,7 @@ import time
 import numpy as np
 
 from rsim.core import Component
+from rsim.core.signal import as_signal
 from .driver import Driver
 from .mapping_input import pose_transform
 
@@ -26,7 +27,7 @@ class ScanOdometry(Component):
     claiming ownership of the application's global odometry transform.
     """
     def __init__(self, ros, *, prefix, mount, directory, ports, parameters=None,
-                 wheel_topic=None, scan_topic=None, odom_frame=None):
+                 wheel_topic=None, scan_topic=None, odom_frame=None, wheel=None, scan=None):
         from graphmap.pose import Pose
         self.ros, self.prefix = ros, prefix
         self.mount = Pose(**mount) if isinstance(mount, dict) else mount
@@ -60,7 +61,10 @@ class ScanOdometry(Component):
         from .sensor import RosSensor
         self.reader = RosSensor(self.local+'/odom', 'odom', ros=ros,
                                 clock=ports['odometry'].clock, history=ports['odometry'].history_capacity, hz=200)
-        super().__init__(ros, self.driver, self.reader)
+        self.sources = {name: as_signal(value) for name, value in (('wheel', wheel), ('scan', scan)) if value is not None}
+        if any(port.clock not in (None, 'ros:system') for port in self.sources.values()):
+            raise ValueError('scan estimator requires ROS system-time inputs')
+        super().__init__(ros, self.driver, self.reader, inputs=tuple(self.sources.values()))
         self.expose('odometry', self.reader.odom)
         self.pending = deque()
         self.wheel_times = deque(maxlen=1000)
@@ -92,12 +96,34 @@ class ScanOdometry(Component):
         self.publishers = [self.tf, self.static, self.scan]
         self.static.publish(TFMessage(transforms=[pose_transform(self.mount)]))
         qos = QoSProfile(depth=100, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.subscriptions = [node.create_subscription(Odometry, self.wheel_topic, self.wheel, qos),
-            node.create_subscription(LaserScan, self.scan_topic, self.receive_scan, qos),
-            node.create_subscription(Odometry, self.local+'/odom', self.receive_odometry, QoSProfile(depth=100))]
+        self.subscriptions = [node.create_subscription(Odometry, self.local+'/odom', self.receive_odometry, QoSProfile(depth=100))]
+        if 'wheel' not in self.sources:
+            self.subscriptions.append(node.create_subscription(Odometry, self.wheel_topic, self.wheel, qos))
+        if 'scan' not in self.sources:
+            self.subscriptions.append(node.create_subscription(LaserScan, self.scan_topic, self.receive_scan, qos))
+        self.previous = dict.fromkeys(self.sources, 0)
+        if self.sources:
+            self.task('scan-odometry-inputs', self.feed, hz=500)
         self.started = time.monotonic()
         self.last_output = None
         self.task('scan-odometry-health', self.health, hz=2)
+
+    async def feed(self):
+        from nav_msgs.msg import Odometry
+        from sensor_msgs.msg import LaserScan
+        from .chassis import fill_ros2
+        for name, source in self.sources.items():
+            if source.frames:
+                await source.get(timeout=.01)
+            for frame in source.frames:
+                if frame.sequence <= self.previous[name]:
+                    continue
+                if frame.clock != 'ros:system':
+                    raise ValueError('scan estimator input clock changed')
+                message = fill_ros2(Odometry() if name == 'wheel' else LaserScan(), frame.data)
+                message.header.stamp.sec, message.header.stamp.nanosec = divmod(frame.stamp_ns, 10**9)
+                (self.wheel if name == 'wheel' else self.receive_scan)(message)
+                self.previous[name] = frame.sequence
 
     def wheel(self, msg):
         from graphmap.pose import Pose

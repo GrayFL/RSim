@@ -5,7 +5,7 @@ from typing import ClassVar
 
 from rsim.runtime.sharing import PortSpec, SharedComponent, SharedProvider, validate_component_ports
 from .configuration import (absolute_name, fingerprint, freeze_fields, from_config,
-                            mount_data, plain, positive)
+                            connect_source, mount_data, plain, positive, require_keys, source_reference)
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,7 @@ class ScanOdometryFactory:
     odom_frame: str | None = None
     parameters: object = None
     history: int = 512
+    sources: object = None
     schema_version: int = 1
     FACTORY_VERSION: ClassVar[str] = 'scan-odometry-factory-v1'
     INTERFACE_VERSION: ClassVar[str] = 'scan-odometry-ports-v1'
@@ -36,6 +37,11 @@ class ScanOdometryFactory:
         object.__setattr__(self, 'directory', str(Path(self.directory).expanduser().resolve()))
         from rsim.adapters.ros2.arguments import GeneratedParameters
         GeneratedParameters(self.parameters or {})
+        sources = dict(self.sources or {})
+        require_keys(sources, ('wheel', 'scan'), 'scan odometry sources')
+        for name, value in sources.items():
+            sources[name] = source_reference(value, kind='odom' if name == 'wheel' else 'scan')
+        object.__setattr__(self, 'sources', sources)
         freeze_fields(self)
 
     @classmethod
@@ -50,13 +56,19 @@ class ScanOdometryFactory:
     def fingerprint(self):
         return fingerprint(self)
 
-    def build(self, *, ros=None):
+    def build(self, *, ros=None, wheel=None, scan=None):
         from rsim.adapters.ros2 import RosContext
         from rsim.adapters.ros2.scan_odometry import ScanOdometry
         specs = self.port_specs(history=self.history)
-        result = ScanOdometry(ros if ros is not None else RosContext(), mount=plain(self.mount),
+        ros = ros if ros is not None else RosContext()
+        if wheel is None and self.sources.get('wheel') is not None:
+            wheel = connect_source(self.sources['wheel'], kind='odom', ros=ros)
+        if scan is None and self.sources.get('scan') is not None:
+            scan = connect_source(self.sources['scan'], kind='scan', ros=ros)
+        result = ScanOdometry(ros, mount=plain(self.mount),
             directory=self.directory, prefix=self.prefix, wheel_topic=self.wheel_topic,
-            scan_topic=self.scan_topic, odom_frame=self.odom_frame, parameters=plain(self.parameters), ports=specs)
+            scan_topic=self.scan_topic, odom_frame=self.odom_frame, parameters=plain(self.parameters), ports=specs,
+            wheel=wheel, scan=scan)
         validate_component_ports(result, specs)
         return result
 

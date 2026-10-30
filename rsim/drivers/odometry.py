@@ -100,7 +100,7 @@ class OdometryFactory:
         return fingerprint(self)
 
     def build(self, *, wheel=None, imu=None, scan=None, ros=None,
-              pose_history=None, covariance_history=None):
+              pose_history=None, covariance_history=None, scan_input=None):
         from rsim.core import Component
         from rsim.adapters.ros2 import RosContext
         from rsim.adapters.ros2.odometry import InertialOdometry
@@ -116,7 +116,7 @@ class OdometryFactory:
         if scan is None and self.scan_topic is not None:
             scan = ScanOdometryFactory(mount=plain(self.scan_mount), directory=self.directory,
                 prefix=self.prefix, wheel_topic=self.wheel_topic, scan_topic=self.scan_topic,
-                odom_frame=self.world_frame, parameters=plain(self.scan_parameters)).build(ros=ros)
+                odom_frame=self.world_frame, parameters=plain(self.scan_parameters)).build(ros=ros, wheel=wheel, scan=scan_input)
         specs = self.port_specs(history=self.history)
         result = InertialOdometry(wheel, body_imu.imu, ros=ros, scan=scan,
             prefix=self.prefix, world_frame=self.world_frame, body_frame=self.imu_mount['wrd_frame'],
@@ -140,10 +140,10 @@ class OdometryFactory:
 
 
 def Odometry(*, imu_mount, directory, wheel=None, imu=None, scan=None, ros=None,
-             pose_history=None, covariance_history=None, **settings):
+             pose_history=None, covariance_history=None, scan_input=None, **settings):
     """Build a local estimator; new applications may retain OdometryFactory."""
     if scan is not None and settings.get('scan_topic') is not None:
         raise ValueError('pass a scan estimator or a scan topic')
     return OdometryFactory(imu_mount=imu_mount, directory=directory, **settings).build(
         wheel=wheel, imu=imu, scan=scan, ros=ros,
-        pose_history=pose_history, covariance_history=covariance_history)
+        pose_history=pose_history, covariance_history=covariance_history, scan_input=scan_input)

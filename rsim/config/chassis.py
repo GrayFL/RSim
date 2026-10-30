@@ -11,8 +11,6 @@ def load_chassis(path, *, motion_enabled=False, hardware=True):
             raise ValueError('chassis service needs a topic-only chassis recipe; legacy recipes own hardware')
         from .local_chassis import load_local_chassis
         return load_local_chassis(path, motion_enabled=motion_enabled)
-    from rsim.drivers.native_chassis import NativeChassis, TopicChassis
-    settings = dict(config['chassis'])
-    settings['directory'] = (path.parent/settings['directory']).resolve()
-    factory = NativeChassis if hardware else TopicChassis
-    return factory(**settings, motion_enabled=motion_enabled)
+    from rsim.drivers.native_chassis import NativeChassisFactory, TopicChassisFactory
+    factory = NativeChassisFactory if hardware else TopicChassisFactory
+    return factory.from_config(path, overrides={'motion_enabled': motion_enabled}).build()

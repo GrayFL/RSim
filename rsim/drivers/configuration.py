@@ -169,6 +169,19 @@ def from_config(cls, path, *, section, overrides=None, path_fields=()):
         else:
             if current.get(names[-1]) is not None:
                 current[names[-1]] = str((path.parent / Path(current[names[-1]]).expanduser()).resolve())
+    def native_paths(value):
+        if not isinstance(value, Mapping):
+            return
+        for name, item in value.items():
+            if name == 'ros_args' and isinstance(item, (list, tuple)):
+                args = list(item)
+                for index, argument in enumerate(args[:-1]):
+                    if argument == '--params-file':
+                        args[index + 1] = str((path.parent / Path(args[index + 1]).expanduser()).resolve())
+                value[name] = args
+            elif isinstance(item, Mapping):
+                native_paths(item)
+    native_paths(settings)
     return cls(**settings)
 
 
@@ -255,3 +268,24 @@ def connect_source(reference, *, kind, ros=None):
         ports={name: PortSpec(schema=settings['schema'], clock=settings['clock'], history_capacity=settings['history'])},
         transport=TransportConfig(**transport) if transport is not None else None)
     return getattr(device, name)
+
+
+def resource_digests(value):
+    """Snapshot explicitly referenced native parameter files, never user outputs."""
+    from rsim.adapters.ros2.arguments import RosArguments
+    result = {}
+    def visit(settings):
+        if not isinstance(settings, Mapping):
+            return
+        if settings.get('ros_args'):
+            result.update(RosArguments(ros_args=settings['ros_args']).files)
+        for item in settings.values():
+            visit(item)
+    visit(value)
+    return freeze(result)
+
+
+def validate_resources(resources):
+    for path, digest in resources.items():
+        if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
+            raise ValueError(f'configuration resource changed; recreate factory: {path}')
