@@ -8,7 +8,8 @@ from .stm32 import STM32, STM32Factory
 from .chassis import Chassis, ChassisFactory
 from .ros_topics import ROS2Topic, ROS2TopicFactory
 from .bluesea import BlueSea, BlueSeaFactory
-from .odometry import Odometry
+from .odometry import Odometry, OdometryFactory
+from .scan_odometry import ScanOdometryFactory
 from .native_chassis import NativeChassis, TopicChassis
 from .mujoco import MuJoCo
 
@@ -27,4 +28,5 @@ __all__ += ['MuJoCo']
 __all__ += [
     "CameraFactory", "ROS2TopicFactory", "D435Factory", "RobinWFactory",
     "HipnucFactory", "STM32Factory", "BlueSeaFactory", "ChassisFactory",
+    "OdometryFactory", "ScanOdometryFactory",
 ]

@@ -6,7 +6,12 @@ from .geometry import Mount
 from .assembly import MountedSensor, SensorAssembly, SensorRig
 
 def read_config(path):
-    """Load a YAML mapping safely, requiring unique string keys."""
+    """Load safe YAML or TOML, requiring unique string keys."""
+    path = Path(path).expanduser()
+    if path.suffix.lower() == '.toml':
+        import tomllib
+        with path.open('rb') as file:
+            return tomllib.load(file)
     import yaml
 
     class UniqueLoader(yaml.SafeLoader):
@@ -23,7 +28,7 @@ def read_config(path):
         return result
 
     UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
-    with Path(path).expanduser().open() as file:
+    with path.open() as file:
         config = yaml.load(file, Loader=UniqueLoader)
     if not isinstance(config, dict):
         raise ValueError("configuration must be a mapping")

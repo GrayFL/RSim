@@ -57,9 +57,11 @@ def plain(value):
 
 def fingerprint(recipe):
     config = {field.name: plain(getattr(recipe, field.name)) for field in fields(recipe)
-              if field.name != 'log_path'}
+              if field.name != 'log_path' and field.metadata.get('fingerprint', True)}
     identity = dict(factory=type(recipe).__module__ + '.' + type(recipe).__qualname__,
                     version=recipe.FACTORY_VERSION, config=config)
+    if hasattr(recipe, 'INTERFACE_VERSION'):
+        identity['interface'] = recipe.INTERFACE_VERSION
     return hashlib.sha256(json.dumps(identity, sort_keys=True, allow_nan=False,
                                      separators=(',', ':')).encode()).hexdigest()
 
@@ -99,3 +101,128 @@ def restore_setup(snapshot):
 def prepare_log_directory(log_path):
     if log_path is not None:
         Path(log_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+
+
+def require_keys(value, allowed, name):
+    if not isinstance(value, Mapping):
+        raise TypeError(f'{name} must be a mapping')
+    unknown = set(value) - set(allowed)
+    if unknown:
+        raise ValueError(f'unknown {name} settings: {sorted(unknown)}')
+
+
+def positive(value, name, *, integer=False):
+    if (type(value) not in ((int,) if integer else (int, float))
+            or not math.isfinite(value) or value <= 0):
+        raise ValueError(f'{name} must be a positive {"integer" if integer else "number"}')
+
+
+def absolute_name(value, name):
+    if not isinstance(value, str) or not value.startswith('/') or value == '/' or '//' in value:
+        raise ValueError(f'{name} must be an absolute ROS name')
+
+
+def mount_data(value, *, name='mount', base=None):
+    """Canonical SE(3) snapshot; an optional local Pose is converted, never held."""
+    from graphmap.pose import Pose
+    if isinstance(value, Mapping):
+        require_keys(value, ('position', 'rotation', 'wrd_frame', 'ego_frame', 'degrees',
+                             'euler_order', 'rotation_type'), name)
+        value = Pose(**plain(value))
+    if (not isinstance(value, Pose) or not value.is_rigid or not value.wrd_frame
+            or not value.ego_frame or value.wrd_frame == value.ego_frame
+            or (base is not None and value.wrd_frame != base)):
+        raise ValueError(f'{name} requires a rigid mount with distinct frame labels'
+                         + (f' and base {base!r}' if base is not None else ''))
+    return freeze(dict(position=value.position.tolist(), rotation=value.quat.tolist(),
+                       wrd_frame=value.wrd_frame, ego_frame=value.ego_frame))
+
+
+def from_config(cls, path, *, section, overrides=None, path_fields=()):
+    """Strict, portable recipe loading; this helper never constructs a graph."""
+    from rsim.config.loader import read_config
+    path = Path(path).expanduser().resolve(strict=True)
+    document = read_config(path)
+    if section in document:
+        require_keys(document, ('schema_version', section), 'configuration root')
+        settings = dict(document[section])
+        settings.setdefault('schema_version', document.get('schema_version', 1))
+    else:
+        settings = dict(document)
+    def merge(target, update):
+        for key, value in update.items():
+            if isinstance(target.get(key), Mapping) and isinstance(value, Mapping):
+                target[key] = merge(dict(target[key]), value)
+            else:
+                target[key] = value
+        return target
+    require_keys(overrides or {}, (field.name for field in fields(cls) if field.init and not field.name.startswith('_')),
+                 'overrides')
+    settings = merge(settings, overrides or {})
+    require_keys(settings, (field.name for field in fields(cls) if field.init and not field.name.startswith('_')),
+                 cls.__name__)
+    for dotted in path_fields:
+        current, names = settings, dotted.split('.')
+        for name in names[:-1]:
+            current = current.get(name, {})
+            if not isinstance(current, Mapping):
+                break
+        else:
+            if current.get(names[-1]) is not None:
+                current[names[-1]] = str((path.parent / Path(current[names[-1]]).expanduser()).resolve())
+    return cls(**settings)
+
+
+def source_reference(value, *, kind, default_topic=None, history=512):
+    """Validate a pure connection description without starting a provider."""
+    if value is None:
+        if default_topic is None:
+            return None
+        value = dict(kind='ros_topic', topic=default_topic)
+    if not isinstance(value, Mapping):
+        raise TypeError('source reference must be pure data; inject live sources into build()')
+    common = {'kind', 'clock', 'history', 'revision'}
+    source_kind = value.get('kind')
+    allowed = common | ({'topic'} if source_kind == 'ros_topic' else
+                        {'key', 'port', 'interface_version', 'schema', 'transport'}
+                        if source_kind == 'shared_device' else set())
+    require_keys(value, allowed, 'source reference')
+    if source_kind not in ('ros_topic', 'shared_device'):
+        raise ValueError('source kind must be ros_topic or shared_device')
+    result = dict(value)
+    result.setdefault('clock', 'ros:system')
+    result.setdefault('history', history)
+    positive(result['history'], 'source history', integer=True)
+    if result['clock'] != 'ros:system':
+        raise ValueError('native sources require ros:system clock')
+    if source_kind == 'ros_topic':
+        absolute_name(result.get('topic'), 'source topic')
+    else:
+        for name in ('key', 'interface_version'):
+            if not isinstance(result.get(name), str) or not result[name]:
+                raise ValueError(f'shared_device source requires {name}')
+        result.setdefault('port', kind)
+        result.setdefault('schema', 'rsim.value.v1')
+        if not isinstance(result['port'], str) or not result['port']:
+            raise ValueError('source port must be a nonempty string')
+        if result.get('transport') is not None:
+            from rsim.transport.descriptor import TransportConfig
+            require_keys(result['transport'], ('backend', 'domain_id'), 'source transport')
+            TransportConfig(**result['transport'])
+    return freeze(result)
+
+
+def connect_source(reference, *, kind, ros=None):
+    settings = plain(reference)
+    if settings['kind'] == 'ros_topic':
+        from rsim.adapters.ros2.sensor import RosSensor
+        return getattr(RosSensor(settings['topic'], kind, ros=ros, clock=settings['clock'],
+                                 history=settings['history'], hz=500), kind)
+    from rsim.runtime.sharing import SharedComponent, PortSpec
+    from rsim.transport.descriptor import TransportConfig
+    name = settings['port']
+    transport = settings.get('transport')
+    device = SharedComponent(key=settings['key'], interface_version=settings['interface_version'],
+        ports={name: PortSpec(schema=settings['schema'], clock=settings['clock'], history_capacity=settings['history'])},
+        transport=TransportConfig(**transport) if transport is not None else None)
+    return getattr(device, name)

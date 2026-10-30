@@ -26,7 +26,10 @@ class ScanOdometry(Component):
     claiming ownership of the application's global odometry transform.
     """
     def __init__(self, ros, *, prefix, mount, directory, parameters=None,
-                 wheel_topic=None, scan_topic=None, odom_frame=None):
+                 wheel_topic=None, scan_topic=None, odom_frame=None, ports=None):
+        if ports is None:
+            from rsim.drivers.scan_odometry import ScanOdometryFactory
+            ports = ScanOdometryFactory.port_specs()
         from graphmap.pose import Pose
         self.ros, self.prefix = ros, prefix
         self.mount = Pose(**mount) if isinstance(mount, dict) else mount
@@ -59,7 +62,7 @@ class ScanOdometry(Component):
                         '/tf': self.local+'/tf', '/tf_static': self.local+'/tf_static'})
         from .sensor import RosSensor
         self.reader = RosSensor(self.local+'/odom', 'odom', ros=ros,
-                                clock='ros:system', history=512, hz=200)
+                                clock=ports['odometry'].clock, history=ports['odometry'].history_capacity, hz=200)
         super().__init__(ros, self.driver, self.reader)
         self.expose('odometry', self.reader.odom)
         self.pending = deque()

@@ -37,7 +37,10 @@ class InertialOdometry(Component):
                  world_frame='odom_fused', body_frame='base_footprint', directory,
                  parameters=None, input_timeout=.3, history=512,
                  use_orientation=True, use_acceleration=True, lateral_acceleration=False,
-                 pose_history=None, covariance_history=None):
+                 pose_history=None, covariance_history=None, ports=None):
+        if ports is None:
+            from rsim.drivers.odometry import OdometryFactory
+            ports = OdometryFactory.port_specs(history=history)
         if not prefix.startswith('/') or prefix == '/' or not world_frame or not body_frame or world_frame == body_frame:
             raise ValueError('odometry requires a namespace and distinct world/body frames')
         if not np.isfinite(input_timeout) or input_timeout <= 0:
@@ -80,12 +83,12 @@ class InertialOdometry(Component):
         self.driver = Driver('robot_localization', 'ekf_node', key='odometry:'+prefix,
                              generated_parameters=config, log_path=directory/'ekf.log',
                              remappings={'__ns': prefix, 'odometry/filtered': prefix+'/filtered'})
-        self.filtered = RosSensor(prefix+'/filtered', 'odom', ros=self.ros, clock='ros:system', history=history, hz=500)
+        self.filtered = RosSensor(prefix+'/filtered', 'odom', ros=self.ros, clock=ports['odometry'].clock,
+                                  history=ports['odometry'].history_capacity, hz=500)
         super().__init__(self.ros, self.driver, *((scan,) if scan else ()),
                          inputs=(*self.sources.values(), self.filtered.odom))
-        self.pose = self.signal('pose', history=history, clock='ros:system')
-        self.odometry = self.signal('odometry', history=history, clock='ros:system')
-        self.status = self.signal('status', history=32, clock='ros:system')
+        for name, spec in ports.items():
+            setattr(self, name, self.signal(name, history=spec.history_capacity, clock=spec.clock))
         self.estimate = self.odometry
         self.counts = dict.fromkeys(self.sources, 0)
         self.stamps = dict.fromkeys(self.sources, -1)
