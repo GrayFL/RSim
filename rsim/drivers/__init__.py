@@ -3,7 +3,7 @@ from .realsense import D435, D435Factory
 from .seyond import RobinW, RobinWFactory
 from .camera import Camera, CameraFactory
 from .hipnuc import Hipnuc, HipnucFactory
-from .mapping import Mapper
+from .mapping import Mapper, MappingFactory
 from .stm32 import STM32, STM32Factory
 from .chassis import Chassis, ChassisFactory
 from .ros_topics import ROS2Topic, ROS2TopicFactory
@@ -30,4 +30,5 @@ __all__ += [
     "HipnucFactory", "STM32Factory", "BlueSeaFactory", "ChassisFactory",
     "OdometryFactory", "ScanOdometryFactory",
     "NativeChassisFactory", "TopicChassisFactory",
+    "MappingFactory",
 ]

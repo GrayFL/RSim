@@ -3,7 +3,7 @@ import asyncio
 from pathlib import Path
 
 from rsim.core import Component
-from rsim.runtime.sharing import SharedComponent, PortSpec
+from rsim.runtime.sharing import SharedComponent
 
 
 class MappingSave:
@@ -34,19 +34,12 @@ class MappingSave:
 
 
 
-def mapping_ports(history=3):
-    return {name: PortSpec(schema=schema, clock='ros:system', history_capacity=history)
-            for name, schema in {'pose': 'graphmap.pose.v1', 'odometry': 'graphmap.pose.v1',
-                                  'map': 'rsim.laser-map.v1', 'rgb_map': 'rsim.pointcloud.v1',
-                                  'status': 'rsim.mapping-status.v1'}.items()}
-
-
 class MappingView(MappingSave, Component):
     """Public aliases of a native or shared multi-output mapping component."""
     def __init__(self, source):
         super().__init__(source)
         self.source = source
-        for name in mapping_ports():
+        for name in source.outputs:
             self.expose(name, source.outputs[name])
 
 
@@ -54,7 +47,7 @@ class MappingClient(MappingSave, SharedComponent):
     pass
 
 
-def Mapper(name='mapping', *, history=3, transport=None):
-    """Connection-only view; request exactly the outputs the application needs."""
-    return MappingClient(key='mapper:' + name, ports=mapping_ports(history),
-                         interface_version='mapping-ports-v1', transport=transport)
+def Mapper(name='mapping', *, ports, interface_version, transport=None, options=None):
+    """Connect using the Factory's explicit versioned contract, without importing it."""
+    return MappingClient(key='mapper:' + name, ports=ports,
+                         interface_version=interface_version, transport=transport, options=options)

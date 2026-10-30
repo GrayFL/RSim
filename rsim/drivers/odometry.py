@@ -5,7 +5,7 @@ from typing import ClassVar
 
 from rsim.runtime.sharing import PortSpec, SharedComponent, SharedProvider, validate_component_ports
 from .configuration import (absolute_name, connect_source, fingerprint, freeze, freeze_fields,
-                            from_config, mount_data, plain, positive, require_keys, source_reference)
+                            from_config, mount_data, plain, positive, require_keys, source_reference, shared_ros_context)
 
 
 @dataclass(frozen=True)
@@ -52,8 +52,8 @@ class OdometryFactory:
         inputs['imu'] = source_reference(inputs.get('imu'), kind='imu', default_topic=self.imu_topic)
         if 'scan' in inputs:
             inputs['scan'] = source_reference(inputs['scan'], kind='odometry')
-            if inputs['scan']['kind'] != 'shared_device':
-                raise ValueError('scan estimator reference must be shared_device')
+            if inputs['scan']['kind'] not in ('shared_device', 'shared_sensor'):
+                raise ValueError('scan estimator reference must connect a shared provider')
             if self.scan_topic is not None:
                 raise ValueError('choose a scan estimator reference or a raw scan topic')
         if self.scan_topic is not None:
@@ -81,8 +81,18 @@ class OdometryFactory:
             if name in (self.parameters or {}):
                 positive(self.parameters[name], name)
         from rsim.adapters.ros2.arguments import GeneratedParameters
-        GeneratedParameters(self.parameters or {})
+        from rsim.adapters.ros2.odometry import filter_parameters
+        GeneratedParameters(filter_parameters(prefix=self.prefix, world_frame=self.world_frame,
+            body_frame=self.imu_mount['wrd_frame'], scan=self.scan_topic is not None or 'scan' in inputs,
+            parameters=plain(self.parameters), use_orientation=self.use_orientation,
+            use_acceleration=self.use_acceleration, lateral_acceleration=self.lateral_acceleration))
         GeneratedParameters(self.scan_parameters or {})
+        if self.scan_topic is not None:
+            from .scan_odometry import ScanOdometryFactory
+            ScanOdometryFactory(mount=plain(self.scan_mount), prefix=self.prefix, odom_frame=self.world_frame,
+                                parameters=plain(self.scan_parameters))
+        elif self.scan_parameters:
+            raise ValueError('scan_parameters require a raw scan_topic')
         freeze_fields(self)
 
     @classmethod
@@ -102,11 +112,10 @@ class OdometryFactory:
     def build(self, *, wheel=None, imu=None, scan=None, ros=None,
               pose_history=None, covariance_history=None, scan_input=None):
         from rsim.core import Component
-        from rsim.adapters.ros2 import RosContext
         from rsim.adapters.ros2.odometry import InertialOdometry
         from rsim.components.inertial import BodyIMU
         from .scan_odometry import ScanOdometryFactory
-        ros = ros if ros is not None else RosContext()
+        ros = shared_ros_context(ros, wheel, imu, scan, scan_input)
         wheel = wheel if wheel is not None else connect_source(self.sources['wheel'], kind='odom', ros=ros)
         imu = imu if imu is not None else connect_source(self.sources['imu'], kind='imu', ros=ros)
         body_imu = BodyIMU(imu, plain(self.imu_mount), **(plain(self.imu_options) or {}))

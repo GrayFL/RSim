@@ -1,6 +1,6 @@
 # 多传感器 RGB 建图
 
-`rsim.drivers.Mapper` 将 Super-LIO 与 RTAB-Map 组装为共享 provider；`load_mapper()` 从 YAML 创建同一个组件。**几何来自 Super-LIO 去畸变后的激光点，D435 提供 RGB 上色及视觉特征，建图不使用相机深度流。** RTAB-Map 接收匹配的 RGB、激光点云和里程计，默认将激光投影为视觉特征深度，以视觉匹配和激光 ICP 验证回环，再优化关键帧位姿。可选独立 EKF 融合轮速、底盘陀螺和二维扫描位姿，作为 RTAB 的局部里程计；不将这些约束塞入 Super-LIO。该组件只读设备，不创建速度写端。
+`MappingFactory`（便捷入口 `rsim.drivers.Mapper`）将 Super-LIO 与 RTAB-Map 组装为共享 provider；`load_mapper()` 从 YAML 创建同一个组件。**几何来自 Super-LIO 去畸变后的激光点，D435 提供 RGB 上色及视觉特征，建图不使用相机深度流。** RTAB-Map 接收匹配的 RGB、激光点云和里程计，默认将激光投影为视觉特征深度，以视觉匹配和激光 ICP 验证回环，再优化关键帧位姿。可选独立 EKF 融合轮速、底盘陀螺和二维扫描位姿，作为 RTAB 的局部里程计；不将这些约束塞入 Super-LIO。该组件只读设备，不创建速度写端。
 
 默认只订阅已经运行的硬件 ROS2 话题。相机/雷达由其所在机器的硬件脚本独立启动；建图服务只启动 Super-LIO、RTAB-Map 和可选里程计算法。应用入口 `python -m rsim.apps.mapping_service` 不允许自动启动硬件或 SSH 连接；脚本、配方与查看器见[独立启动说明](bringup.md)。低层 `drivers.Mapper(start_drivers=True)` 保留为显式硬件实验接口。
 
@@ -73,8 +73,10 @@ async with Runtime(mapper):
 ```python
 from rsim import Runtime
 from rsim.devices import Mapper
+from rsim.drivers import MappingFactory
 
-mapper = Mapper("mapping")
+mapper = Mapper("mapping", ports=MappingFactory.port_specs(history=3),
+                interface_version=MappingFactory.INTERFACE_VERSION)
 async with Runtime(mapper.pose, mapper.rgb_map):
     pose = (await mapper.pose.get(timeout=60)).data
     points = (await mapper.rgb_map.get(timeout=30)).data.points
@@ -312,3 +314,5 @@ python -m examples.mapping.mapping mapping.yaml --seconds 30 --plot
 扫描结束可能位于两个 IMU 采样之间。原生补丁保留第一条未来 IMU，在边界插值并积分到扫描末端，下一扫描复用剩余区间；校正后的高频预测重放最近2秒缓存，避免因延迟校正漏积分。单次 IMU 间隙超过0.2秒时不跨越外推，初始化要求静止。
 
 `lio_parameters['lio.diagnostics.state_csv']` 可记录逐扫描状态；默认关闭，路径须不存在。包含位置、速度、偏置、重力、四元数与18维状态方差。同步写入可能影响时序，主要用于离线诊断。轮速和平面位姿的实验性内嵌 ESKF 更新已从提供的补丁移除；旧 `lio.wheel.*` / `lio.planar.*` 配置会明确报错，应迁到独立融合参数。
+
+配置加载、v2 接口和数据库/参数文件的运行期所有权见[复杂 Factory 生命周期](complex-factories.md)。

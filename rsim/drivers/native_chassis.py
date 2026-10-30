@@ -7,7 +7,7 @@ from rsim.core import Component, CommandSink, CommandRejected, VelocityCommand
 from rsim.runtime.sharing import PortSpec, SharedComponent, SharedProvider, validate_component_ports
 from .configuration import (absolute_name, connect_source, fingerprint, freeze, freeze_fields,
                             from_config, mount_data, plain, positive, require_keys,
-                            resource_digests, restore_setup, snapshot_setup, source_reference, validate_resources)
+                            resource_digests, restore_setup, snapshot_setup, source_reference, validate_resources, shared_ros_context)
 
 
 class NativeRobot(Component):
@@ -34,6 +34,8 @@ class NativeRobot(Component):
                                          motion_enabled=motion_enabled, **(control or {}))
 
     async def _apply(self, envelope):
+        if envelope.source_bound is not None:
+            raise CommandRejected('native chassis has no simulation source context for source_bound')
         if not isinstance(envelope.value, VelocityCommand):
             raise CommandRejected('velocity requires VelocityCommand')
         if not self.motion_enabled and envelope.value != VelocityCommand():
@@ -163,8 +165,11 @@ class NativeChassisFactory:
         if motor.get('port') is not None:
             motor['port'] = str(Path(motor['port']).expanduser().resolve())
         parameters = motor.get('parameters') or {}
-        if 'motion_enabled' in parameters and parameters['motion_enabled'] != self.motion_enabled:
+        if 'motion_enabled' in parameters and (type(parameters['motion_enabled']) is not bool
+                                               or parameters['motion_enabled'] != self.motion_enabled):
             raise ValueError('stm32 motion_enabled must match the composite permission')
+        if motor.get('port') and parameters.get('port') and str(Path(parameters['port']).expanduser().resolve()) != motor['port']:
+            raise ValueError('STM32 port override conflicts with its explicit owner')
         if parameters.get('use_sim_time', False):
             raise ValueError('native chassis requires ROS system time')
         positive(parameters.get('max_command_ttl', .5), 'max_command_ttl')
@@ -230,6 +235,9 @@ class NativeChassisFactory:
             raise ValueError('native argv motion_enabled conflicts with composite permission')
         if motor['values'].get('use_sim_time', False):
             raise ValueError('native chassis requires ROS system time')
+        expected_port = self.stm32.get('port') or (self.stm32.get('parameters') or {}).get('port')
+        if expected_port and str(Path(expected_port).expanduser().resolve()) != motor['port']:
+            raise ValueError('native argv port conflicts with the explicit STM32 owner')
         for kind, settings, mount in (('imu', self.imu, self.imu_mount), ('scan', self.scan, self.scan_mount)):
             if settings is not None and settings.get('start_driver'):
                 prepared[kind] = snapshot_setup(_sensor_setup(plain(settings), kind,
@@ -253,35 +261,21 @@ class NativeChassisFactory:
                                      fallback=VelocityCommand())}
 
     def _specs(self):
+        motor = (restore_setup(self._prepared['stm32'])['values'] if self._prepared and self._prepared.get('stm32')
+                 else self.stm32.get('parameters') or {})
         return self.port_specs(history=(self.odometry or {}).get('history', 512),
             state_history=self.stm32.get('history', 128),
-            max_ttl=(self.stm32.get('parameters') or {}).get('max_command_ttl', .5))
+            max_ttl=motor.get('max_command_ttl', .5))
 
     def fingerprint(self):
         self._require_prepared()
         return fingerprint(self)
 
     def build(self, *, ros=None, chassis=None, imu=None, scan=None, odometry=None):
-        from rsim.adapters.ros2 import RosContext, RosSensor, Driver
+        from rsim.adapters.ros2 import RosSensor, Driver
         from rsim.core.signal import as_signal
         self._require_prepared()
-        contexts, seen = set(), set()
-        def visit(value):
-            if value is None:
-                return
-            node = value if isinstance(value, Component) else as_signal(value).producer
-            if node in seen:
-                return
-            seen.add(node)
-            if isinstance(node, RosContext):
-                contexts.add(node)
-            for dependency in (*node.dependencies, *(port.producer for port in node.inputs)):
-                visit(dependency)
-        for dependency in (ros, chassis, imu, scan, odometry):
-            visit(dependency)
-        if len(contexts) > 1:
-            raise ValueError('injected native graph must share one RosContext')
-        ros = ros if ros is not None else next(iter(contexts), None) or RosContext(max_callbacks=8)
+        ros = shared_ros_context(ros, chassis, imu, scan, odometry)
         if chassis is None:
             feedback = ({name: connect_source(self.sources[key], kind=name, ros=ros)
                          for name, key in (('odom', 'wheel'), ('state', 'state'))}

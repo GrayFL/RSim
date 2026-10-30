@@ -1,3 +1,4 @@
+from rsim.drivers.mapping import MappingFactory
 import asyncio
 import time
 from types import SimpleNamespace
@@ -158,7 +159,7 @@ def test_mapping_output_composes_global_pose_and_detects_lost_corrections():
     inputs.diagnostics = lambda: {}
     T_base_imu = Pose(position=[.1, 0, .04], rotation=[0, 0, 90], degrees=True,
                       wrd_frame='base', ego_frame='imu')
-    output = MappingOutput(inputs, frames={'map': 'map', 'odom': 'odom', 'base': 'base'},
+    output = MappingOutput(inputs, ports=MappingFactory.port_specs(), frames={'map': 'map', 'odom': 'odom', 'base': 'base'},
         T_base_imu=T_base_imu, database='test.db', assumptions={})
     output._closed = False
     published, transforms = [], []
@@ -208,7 +209,7 @@ def test_atomic_laser_correction_health_ignores_delayed_replays(monkeypatch):
     inputs.diagnostics = lambda: {}
     io = LaserMappingIO(ledger=MapLedger(), pose_history=None, keyframe_type=None,
         camera_type=None, colorize=None, T_base_imu=Pose(), camera_prefix='/camera')
-    output = MappingOutput(inputs, frames={}, T_base_imu=Pose(), database='test.db',
+    output = MappingOutput(inputs, ports=MappingFactory.port_specs(), frames={}, T_base_imu=Pose(), database='test.db',
         assumptions={}, mapping=io)
     io.owner = output
     now = 10 * 10**9

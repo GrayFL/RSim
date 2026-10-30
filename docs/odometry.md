@@ -43,7 +43,7 @@ python -m rsim.apps.chassis_service --config configs/chassis_topics.yaml
 
 默认只允许零速。需要运动时增加 `--enable-motion`；已运行的 STM32 节点也需独立启用运动。硬件在其所在机器通过[独立脚本](bringup.md)启动，服务拒绝 `start_driver: true`。IMU 使用 `rsim_hipnuc`，2D 雷达使用 `bluesea2`。变更 remap 后应保持配置中的 `topic` 与原生输出一致。轮式融合需要 ROS `robot_localization`，二维前端另需 `rtabmap_odom`。
 
-控制服务通过 ROS2Topic 中继接入已有 IMU、odom、诊断和可选扫描，以 Signal 传给算法。STM32 命令使用原生服务及跨主机时钟握手；控制应用可与硬件位于不同机器。最终 chassis 服务供独立 Python 客户端连接，见[远程控制](remote-control.md)。库式硬件实验仍可显式使用 `NativeChassis` 和旧标定配方，但它们不作为应用 CLI 的硬件启动后备路径。
+控制服务通过同一个 RosContext 接入已有 IMU、odom、诊断和可选扫描；也可通过纯配置引用连接已有共享提供端，以 Signal 传给算法。STM32 命令使用原生服务及跨主机时钟握手；控制应用可与硬件位于不同机器。最终 chassis 服务供独立 Python 客户端连接，见[远程控制](remote-control.md)。库式硬件实验仍可显式使用 `NativeChassis` 和旧标定配方，但它们不作为应用 CLI 的硬件启动后备路径。
 
 建图链路启用 `fusion_parameters` 时也组装同一个 `drivers.Odometry`。本机 ROS 底盘在 `Mapper` 中省略 `connection`，通过 `topics` 指定 IMU、轮速和扫描话题，使用零 chassis 时钟偏移；旧 ROS1 输入仍可显式配置 `connection`。底盘已融合位姿的重复融合不在此输入契约内。
 
@@ -68,3 +68,5 @@ scan:
 BlueSea 原生驱动也提供 `with_angle_filter`、`min_angle/max_angle`、`mask1...` 以及重采样参数，具体含义依驱动版本。这里在原始输出后处理，以保留可对照的原始数据。应用层的阴影去噪、地图区域过滤、电梯门过滤与车体遮挡不同，不因使用本组件而自动启用。
 
 融合输入选择参考 [robot_localization 官方配置说明](https://github.com/cra-ros-pkg/robot_localization/blob/ros2/doc/configuring_robot_localization.rst)。
+
+不可变 Odometry/ScanOdometry/NativeChassis/TopicChassis Factory、生成参数生命周期和组合控制所有权见[复杂 Factory 生命周期](complex-factories.md)。

@@ -5,7 +5,8 @@ import time
 
 import numpy as np
 
-from rsim.core import Component
+from rsim.core import Component, Image, PointCloud
+from rsim.core.signal import as_signal
 from .conversions import pointcloud_array
 from .chassis import fill_ros2
 
@@ -98,12 +99,41 @@ def pose_transform(pose, stamp=None):
     return msg
 
 
+def rgb_message_fields(image):
+    """Convert a shared RGB payload without changing acquisition time or pixels."""
+    if not isinstance(image, Image) or image.encoding not in ('rgb8', 'bgr8'):
+        raise ValueError('mapping camera source requires an RGB/BGR Image')
+    pixels = np.ascontiguousarray(image.pixels)
+    if pixels.dtype != np.uint8 or pixels.ndim != 3 or pixels.shape[2] != 3 or min(pixels.shape[:2]) < 1:
+        raise ValueError('mapping camera source requires uint8 HxWx3 pixels')
+    return dict(header={'frame_id': image.frame_id}, height=pixels.shape[0], width=pixels.shape[1],
+                encoding=image.encoding, is_bigendian=0, step=pixels.shape[1] * 3, data=pixels.tobytes())
+
+
 class MappingInputs(Component):
     """Local ROS or optional ROS1 ingress, timed lidar and fixed sensor TF."""
     def __init__(self, ros, bridge, *, prefix, lidar_driver, camera_driver,
-                 mounts, topics, timing, cloud_filter, history=512):
+                 mounts, topics, timing, cloud_filter, history=512, sources=None, camera_prefix=None):
         self.ros, self.bridge, self.prefix = ros, bridge, prefix
         self.mounts, self.topics, self.cloud_filter = mounts, topics, cloud_filter
+        sources = dict(sources or {})
+        if set(sources) - {'imu', 'wheel', 'scan', 'lidar', 'camera', 'camera_info'}:
+            raise ValueError('unknown injected mapping source')
+        if ('camera' in sources) != ('camera_info' in sources):
+            raise ValueError('camera source requires image and calibration Signals')
+        self.extra_sources = {name: as_signal(value) for name, value in sources.items()
+                              if name in ('lidar', 'camera', 'camera_info')}
+        if any(as_signal(value).clock not in (None, 'ros:system') for name, value in sources.items()
+               if name in ('imu', 'wheel', 'scan')):
+            raise ValueError('injected chassis sources require ROS system time')
+        if 'camera' in self.extra_sources:
+            clock = self.extra_sources['camera'].clock
+            if clock != self.extra_sources['camera_info'].clock:
+                raise ValueError('camera and camera_info must use one source clock')
+            if clock not in (None, 'ros:system') and 'camera' not in timing:
+                raise ValueError('device camera clock requires explicit camera timing')
+        self.camera_offset_ns = round(timing.get('camera', {}).get('offset_s', 0.) * 1e9)
+        self.camera_prefix = camera_prefix
         self.remote = {
             'imu': bridge.topic(topics['imu'], 'sensor_msgs/Imu', hz=500, history=history),
             'wheel_odom': bridge.topic(topics['odom'], 'nav_msgs/Odometry', hz=100, history=64),
@@ -118,12 +148,14 @@ class MappingInputs(Component):
                 queue_size=history if name == 'imu' else 2,
                 batch_size=32 if name == 'imu' else 1) for name, key, kind in
                 (('imu', 'imu', 'imu'), ('wheel_odom', 'odom', 'odom'), ('scan', 'scan', 'scan'))}
+        self.remote.update({('wheel_odom' if name == 'wheel' else name): as_signal(value)
+                            for name, value in sources.items() if name in ('wheel', 'imu', 'scan')})
         super().__init__(ros, *(driver for driver in (lidar_driver, camera_driver) if driver is not None),
-                         inputs=tuple(source.output for source in self.remote.values()))
+                         inputs=(*tuple(as_signal(source) for source in self.remote.values()), *self.extra_sources.values()))
         self.lidar_clock = ClockAlignment(**timing['lidar'])
         self.chassis_clock = ClockAlignment(**timing['chassis'])
         self.pending = deque(maxlen=4)
-        self.last = dict.fromkeys(self.remote, 0)
+        self.last = dict.fromkeys((*self.remote, *self.extra_sources), 0)
         self.counts = dict.fromkeys(('lidar', *self.remote), 0)
         self.received = {}
         self.max_gap = {}
@@ -134,7 +166,7 @@ class MappingInputs(Component):
 
     async def open(self):
         from nav_msgs.msg import Odometry
-        from sensor_msgs.msg import Imu, LaserScan, PointCloud2
+        from sensor_msgs.msg import Imu, LaserScan, PointCloud2, Image as RosImage, CameraInfo
         from rclpy.qos import qos_profile_sensor_data, QoSProfile
         from tf2_ros import StaticTransformBroadcaster
         self.ros = self.dependencies[0]
@@ -143,6 +175,10 @@ class MappingInputs(Component):
         for name, cls in dict(self.types, lidar=PointCloud2).items():
             self.publishers[name] = node.create_publisher(cls, self.prefix + '/' + name,
                 QoSProfile(depth=4) if name == 'lidar' else qos_profile_sensor_data)
+        if 'camera' in self.extra_sources:
+            self.types.update(camera=RosImage, camera_info=CameraInfo)
+            for name, suffix in (('camera', '/color/image_raw'), ('camera_info', '/color/camera_info')):
+                self.publishers[name] = node.create_publisher(self.types[name], self.camera_prefix + suffix, qos_profile_sensor_data)
         self.static_tf = StaticTransformBroadcaster(node)
         self.static_tf.sendTransform([pose_transform(pose) for pose in self.mounts])
         def receive(msg):
@@ -150,21 +186,49 @@ class MappingInputs(Component):
                 self.dropped += 1
             self.pending.append((msg, time.time()))
             self.record_received('lidar')
-        self.subscription = node.create_subscription(PointCloud2, self.topics.get('points', self.prefix + '/raw/points'),
-                                                       receive, QoSProfile(depth=4))
+        if 'lidar' not in self.extra_sources:
+            self.subscription = node.create_subscription(PointCloud2, self.topics.get('points', self.prefix + '/raw/points'),
+                                                           receive, QoSProfile(depth=4))
         # Seyond publishes reliably. Request retransmission for these multi-MB
         # clouds: best-effort fragment loss otherwise drops the entire scan.
         self.started = time.monotonic()
         self.task('lidar-time', self.lidar, hz=100)
         self.task('chassis-ingress', self.chassis, hz=500)
+        if self.extra_sources:
+            self.task('shared-mapping-inputs', self.shared_inputs, hz=100)
         self.task('input-health', self.health, hz=2)
+
+    async def shared_inputs(self):
+        for name, source in self.extra_sources.items():
+            if source.frames:
+                await source.get(timeout=.01)
+            for frame in source.frames:
+                if frame.sequence <= self.last[name]:
+                    continue
+                if source.clock is not None and frame.clock != source.clock:
+                    raise ValueError('mapping source clock changed')
+                self.last[name] = frame.sequence
+                self.record_received(name)
+                if name == 'lidar':
+                    if not isinstance(frame.data, PointCloud) or frame.data.frame_id != self.topics['lidar_frame']:
+                        raise ValueError('mapping lidar source requires PointCloud in its configured mount frame')
+                    if len(self.pending) == self.pending.maxlen:
+                        self.dropped += 1
+                    self.pending.append((frame.data, frame.received_ns * 1e-9))
+                else:
+                    values = rgb_message_fields(frame.data) if name == 'camera' else frame.data
+                    message = fill_ros2(self.types[name](), values)
+                    message.header.stamp.sec, message.header.stamp.nanosec = divmod(frame.stamp_ns + self.camera_offset_ns, 10**9)
+                    self.publishers[name].publish(message)
+                    self.counts[name] = self.counts.get(name, 0) + 1
 
     async def lidar(self):
         if not self.pending:
             return
         from sensor_msgs.msg import PointCloud2, PointField
         msg, received = self.pending.popleft()
-        data, start, end = await asyncio.to_thread(timed_points, pointcloud_array(msg).points, **self.cloud_filter)
+        points = msg.points if isinstance(msg, PointCloud) else pointcloud_array(msg).points
+        data, start, end = await asyncio.to_thread(timed_points, points, **self.cloud_filter)
         mapped_end = self.lidar_clock.observe(end, received)
         if mapped_end is None or len(data) < 20:
             return
@@ -182,7 +246,10 @@ class MappingInputs(Component):
 
     async def chassis(self):
         for name, source in self.remote.items():
-            for frame in source.output.frames:
+            source = as_signal(source)
+            if source.frames:
+                await source.get(timeout=.01)
+            for frame in source.frames:
                 if frame.sequence <= self.last[name]:
                     continue
                 self.last[name] = frame.sequence

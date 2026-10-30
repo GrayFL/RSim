@@ -12,18 +12,9 @@ def load_mapper(path, *, providers=True, overrides=None):
     settings.update(overrides or {})
     if not providers:
         from rsim.devices.mapping import Mapper
-        return Mapper(**{key: settings[key] for key in ('name', 'history', 'transport') if key in settings})
-    from rsim.drivers.mapping import Mapper
-    if 'geometry_file' in settings:
-        geometry = read_config(path.parent / settings.pop('geometry_file'))['sensor_params']
-        mounts = dict(settings.get('mounts', {}))
-        for name, source, frame in (('body_lidar', 'lidar3d', 'mapping_lidar'),
-                                     ('body_camera', 'rgb', 'camera_link')):
-            mounts.setdefault(name, dict(position=geometry[source]['position'],
-                rotation=geometry[source]['rotation'], degrees=True,
-                wrd_frame='base_footprint', ego_frame=frame))
-        settings['mounts'] = mounts
-    if 'database' not in settings:
-        raise ValueError('mapping recipe needs an explicit database path')
-    settings['database'] = str((path.parent / settings['database']).resolve())
-    return Mapper(**settings)
+        from rsim.drivers.mapping import MappingFactory
+        return Mapper(**{key: settings[key] for key in ('name', 'transport') if key in settings},
+            ports=MappingFactory.port_specs(history=settings.get('history', 3)),
+            interface_version=MappingFactory.INTERFACE_VERSION)
+    from rsim.drivers.mapping import MappingFactory
+    return MappingFactory.from_config(path, overrides=overrides).shared()

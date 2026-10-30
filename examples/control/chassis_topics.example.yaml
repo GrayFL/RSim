@@ -2,7 +2,6 @@
 chassis:
   directory: ../assets/chassis-controller
   estimator: wheel_imu
-  relay_transport: {backend: cyclonedds, domain_id: 0}
   stm32: {namespace: /rsim/chassis}
   imu: {topic: /rsim/chassis/imu/data}
   imu_mount:

@@ -51,7 +51,7 @@ async with Runtime(mapper.pose):
     frame = await mapper.pose.get(timeout=10)
 ```
 
-具体建图接口使用 `rsim.devices.Mapper()`，无需手工声明端口。`rsim.drivers.Mapper()` 和 `load_mapper(..., providers=True)` 返回明确的 launcher；`load_mapper(..., providers=False)` 只连接。运行示例见 [共享端口 Notebook](../examples/runtime/shared_ports.ipynb)。
+具体建图接口使用 `MappingFactory.device()`；轻量 `rsim.devices.Mapper()` 需要显式传入对应的 ports/interface_version，声明由 MappingFactory 唯一维护。`rsim.drivers.Mapper()` 和 `load_mapper(..., providers=True)` 返回明确的 launcher；`load_mapper(..., providers=False)` 只连接。运行示例见 [共享端口 Notebook](../examples/runtime/shared_ports.ipynb)。
 
 已知端口在构造时就存在。动态接口先 `await describe_shared(key)` 获取 manifest，再构造代理；没有运行的 provider 会明确报错，不自动启动。源身份 `component_key`、运行实例 `instance_id`、接口 `interface_version/schema` 与配置竞争检查 `provider_version` 分开。只读客户端无需知道驱动配置摘要；同 key 的第二个 launcher 必须匹配配置。
 

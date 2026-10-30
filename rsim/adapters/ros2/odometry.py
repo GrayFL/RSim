@@ -24,6 +24,31 @@ def measurement_covariance(values, size, floor):
     return cov
 
 
+def filter_parameters(*, prefix, world_frame, body_frame, scan=False, parameters=None,
+                      use_orientation=True, use_acceleration=True, lateral_acceleration=False):
+    """Pure native contract used for both recipe validation and construction."""
+    config = dict(frequency=50., sensor_timeout=.2, smooth_lagged_data=True,
+                  history_length=3., print_diagnostics=True)
+    config.update(parameters or {})
+    contract = dict(two_d_mode=True, publish_tf=False, use_control=False,
+        world_frame=world_frame, odom_frame=world_frame, map_frame=world_frame+'_map',
+        base_link_frame=body_frame, predict_to_current_time=False, permit_corrected_publication=False,
+        odom0=prefix+'/inputs/wheel', odom0_config=[False]*6+[True, True, False, False, False, True]+[False]*3,
+        odom0_queue_size=256, odom0_differential=False, odom0_relative=False,
+        imu0=prefix+'/inputs/imu', imu0_config=[False]*5+[bool(use_orientation)]+[False]*5+
+            [True, bool(use_acceleration), bool(use_acceleration and lateral_acceleration), False],
+        imu0_queue_size=512, imu0_differential=False, imu0_relative=True,
+        imu0_remove_gravitational_acceleration=False)
+    if scan:
+        contract.update(odom1=prefix+'/inputs/scan', odom1_config=[True, True, False, False, False, True]+[False]*9,
+                        odom1_queue_size=128, odom1_relative=False, odom1_differential=False)
+    conflicts = {key for key in contract if key in (parameters or {}) and parameters[key] != contract[key]}
+    if conflicts:
+        raise ValueError(f'odometry owns frame/input contract: {sorted(conflicts)}')
+    config.update(contract)
+    return config
+
+
 class InertialOdometry(Component):
     """Native EKF independent of mapping and actuator ownership.
 
@@ -57,25 +82,9 @@ class InertialOdometry(Component):
         self.history, self.covariance_history = pose_history, covariance_history
         self.latest = None
         self.last_output_stamp = -1
-        config = dict(frequency=50., sensor_timeout=.2, smooth_lagged_data=True,
-                      history_length=3., print_diagnostics=True)
-        config.update(parameters or {})
-        contract = dict(two_d_mode=True, publish_tf=False, use_control=False,
-            world_frame=world_frame, odom_frame=world_frame, map_frame=world_frame+'_map',
-            base_link_frame=body_frame, predict_to_current_time=False, permit_corrected_publication=False,
-            odom0=prefix+'/inputs/wheel', odom0_config=[False]*6+[True, True, False, False, False, True]+[False]*3,
-            odom0_queue_size=256, odom0_differential=False, odom0_relative=False,
-            imu0=prefix+'/inputs/imu', imu0_config=[False]*5+[bool(use_orientation)]+[False]*5+
-                [True, bool(use_acceleration), bool(use_acceleration and lateral_acceleration), False],
-            imu0_queue_size=512, imu0_differential=False, imu0_relative=True,
-            imu0_remove_gravitational_acceleration=False)
-        if scan is not None:
-            contract.update(odom1=prefix+'/inputs/scan', odom1_config=[True, True, False, False, False, True]+[False]*9,
-                            odom1_queue_size=128, odom1_relative=False, odom1_differential=False)
-        conflicts = {key for key in contract if key in (parameters or {}) and parameters[key] != contract[key]}
-        if conflicts:
-            raise ValueError(f'odometry owns frame/input contract: {sorted(conflicts)}')
-        config.update(contract)
+        config = filter_parameters(prefix=prefix, world_frame=world_frame, body_frame=body_frame,
+            scan=scan is not None, parameters=parameters, use_orientation=use_orientation,
+            use_acceleration=use_acceleration, lateral_acceleration=lateral_acceleration)
         directory = Path(directory)
         self.driver = Driver('robot_localization', 'ekf_node', key='odometry:'+prefix,
                              generated_parameters=config, log_path=directory/'ekf.log',

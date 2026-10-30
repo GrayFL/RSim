@@ -20,6 +20,27 @@ def scan_interval(msg):
     return start, start + round(duration * 1e9)
 
 
+def icp_parameters(*, prefix, body_frame, odom_frame=None, parameters=None):
+    """Pure native parameter contract, validated before any graph is built."""
+    guess_frame = prefix.strip('/').replace('/', '_') + '_wheel_guess'
+    odom_frame = odom_frame or prefix.strip('/').replace('/', '_') + '_scan_odom'
+    config = {'Reg/Force3DoF': 'true', 'Icp/PointToPlane': 'true',
+        'Icp/PointToPlaneK': '10', 'Icp/MaxCorrespondenceDistance': '0.2',
+        'Icp/CorrespondenceRatio': '0.2', 'Icp/VoxelSize': '0.03',
+        'OdomF2M/ScanMaxSize': '2000', 'Odom/ResetCountdown': '0',
+        'scan_range_min': .45, 'scan_range_max': 12., **(parameters or {})}
+    # These fields define the component's frame/transport contract.
+    reserved = dict(frame_id=body_frame, odom_frame_id=odom_frame,
+        guess_frame_id=guess_frame, publish_tf=False, deskewing=True,
+        wait_imu_to_init=False, wait_for_transform=.2, qos=1,
+        topic_queue_size=100, always_process_most_recent_frame=False)
+    conflicts = {k for k in reserved if k in (parameters or {}) and parameters[k] != reserved[k]}
+    if conflicts:
+        raise ValueError(f'scan component owns these parameters: {sorted(conflicts)}')
+    config.update(reserved)
+    return config
+
+
 class ScanOdometry(Component):
     """Native RTAB ICP; wheel poses supply deskew/initial guess, never LIO.
 
@@ -40,20 +61,8 @@ class ScanOdometry(Component):
         self.wheel_topic = wheel_topic or prefix+'/wheel_odom'
         self.scan_topic = scan_topic or prefix+'/scan'
         directory = Path(directory)
-        config = {'Reg/Force3DoF': 'true', 'Icp/PointToPlane': 'true',
-            'Icp/PointToPlaneK': '10', 'Icp/MaxCorrespondenceDistance': '0.2',
-            'Icp/CorrespondenceRatio': '0.2', 'Icp/VoxelSize': '0.03',
-            'OdomF2M/ScanMaxSize': '2000', 'Odom/ResetCountdown': '0',
-            'scan_range_min': .45, 'scan_range_max': 12., **(parameters or {})}
-        # These fields define the component's frame/transport contract.
-        reserved = dict(frame_id=self.mount.wrd_frame, odom_frame_id=self.odom_frame,
-            guess_frame_id=self.guess_frame, publish_tf=False, deskewing=True,
-            wait_imu_to_init=False, wait_for_transform=.2, qos=1,
-            topic_queue_size=100, always_process_most_recent_frame=False)
-        conflicts = {k for k in reserved if k in (parameters or {}) and parameters[k] != reserved[k]}
-        if conflicts:
-            raise ValueError(f'scan component owns these parameters: {sorted(conflicts)}')
-        config.update(reserved)
+        config = icp_parameters(prefix=prefix, body_frame=self.mount.wrd_frame,
+                                odom_frame=self.odom_frame, parameters=parameters)
         self.driver = Driver('rtabmap_odom', 'icp_odometry', key='mapping:scan2d:' + prefix,
             generated_parameters=config, log_path=directory/'scan2d.log',
             remappings={'__ns': self.local, 'scan': self.local+'/scan',

@@ -45,10 +45,10 @@ def rgb_points(points, *, allocator=np.empty):
 
 
 class MappingOutput(Component):
-    def __init__(self, inputs, *drivers, frames, T_base_imu, database, assumptions, allocator=np.empty, mapping=None):
+    def __init__(self, inputs, *drivers, frames, T_base_imu, database, assumptions, ports, allocator=np.empty, mapping=None):
         super().__init__(inputs, *drivers)
-        for name in ("pose", "odometry", "map", "rgb_map", "status"):
-            setattr(self, name, self.signal(name, history=3, clock="ros:system"))
+        for name, spec in ports.items():
+            setattr(self, name, self.signal(name, history=spec.history_capacity, clock=spec.clock))
         self.correction_revision = {}
         self.ingress, self.ros, self.prefix = inputs, inputs.ros, inputs.prefix
         self.frames, self.T_base_imu = frames, T_base_imu

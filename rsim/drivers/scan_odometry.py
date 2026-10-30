@@ -5,7 +5,7 @@ from typing import ClassVar
 
 from rsim.runtime.sharing import PortSpec, SharedComponent, SharedProvider, validate_component_ports
 from .configuration import (absolute_name, fingerprint, freeze_fields, from_config,
-                            connect_source, mount_data, plain, positive, require_keys, source_reference)
+                            connect_source, mount_data, plain, positive, require_keys, source_reference, shared_ros_context)
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,9 @@ class ScanOdometryFactory:
         object.__setattr__(self, 'mount', mount_data(self.mount, base='base_footprint'))
         object.__setattr__(self, 'directory', str(Path(self.directory).expanduser().resolve()))
         from rsim.adapters.ros2.arguments import GeneratedParameters
-        GeneratedParameters(self.parameters or {})
+        from rsim.adapters.ros2.scan_odometry import icp_parameters
+        GeneratedParameters(icp_parameters(prefix=self.prefix, body_frame=self.mount['wrd_frame'],
+            odom_frame=self.odom_frame, parameters=plain(self.parameters)))
         sources = dict(self.sources or {})
         require_keys(sources, ('wheel', 'scan'), 'scan odometry sources')
         for name, value in sources.items():
@@ -57,10 +59,9 @@ class ScanOdometryFactory:
         return fingerprint(self)
 
     def build(self, *, ros=None, wheel=None, scan=None):
-        from rsim.adapters.ros2 import RosContext
         from rsim.adapters.ros2.scan_odometry import ScanOdometry
         specs = self.port_specs(history=self.history)
-        ros = ros if ros is not None else RosContext()
+        ros = shared_ros_context(ros, wheel, scan)
         if wheel is None and self.sources.get('wheel') is not None:
             wheel = connect_source(self.sources['wheel'], kind='odom', ros=ros)
         if scan is None and self.sources.get('scan') is not None:

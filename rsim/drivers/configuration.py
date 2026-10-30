@@ -215,7 +215,7 @@ def read_config(path):
     return config
 
 
-def source_reference(value, *, kind, default_topic=None, history=512):
+def source_reference(value, *, kind, default_topic=None, history=512, clocks=('ros:system',)):
     """Validate a pure connection description without starting a provider."""
     if value is None:
         if default_topic is None:
@@ -227,24 +227,28 @@ def source_reference(value, *, kind, default_topic=None, history=512):
     source_kind = value.get('kind')
     allowed = common | ({'topic'} if source_kind == 'ros_topic' else
                         {'key', 'port', 'interface_version', 'schema', 'transport'}
-                        if source_kind == 'shared_device' else set())
+                        if source_kind == 'shared_device' else
+                        {'key', 'version', 'port', 'transport', 'bundle_stream'} if source_kind == 'shared_sensor' else set())
     require_keys(value, allowed, 'source reference')
-    if source_kind not in ('ros_topic', 'shared_device'):
-        raise ValueError('source kind must be ros_topic or shared_device')
+    if source_kind not in ('ros_topic', 'shared_device', 'shared_sensor'):
+        raise ValueError('source kind must be ros_topic, shared_device or shared_sensor')
     result = dict(value)
     result.setdefault('clock', 'ros:system')
     result.setdefault('history', history)
     positive(result['history'], 'source history', integer=True)
-    if result['clock'] != 'ros:system':
-        raise ValueError('native sources require ros:system clock')
+    if not isinstance(result['clock'], str) or not result['clock'] or (clocks is not None and result['clock'] not in clocks):
+        raise ValueError('source clock must match its explicit clock contract')
     if source_kind == 'ros_topic':
         absolute_name(result.get('topic'), 'source topic')
     else:
-        for name in ('key', 'interface_version'):
+        for name in ('key', 'version' if source_kind == 'shared_sensor' else 'interface_version'):
             if not isinstance(result.get(name), str) or not result[name]:
-                raise ValueError(f'shared_device source requires {name}')
+                raise ValueError(f'{source_kind} source requires {name}')
         result.setdefault('port', kind)
-        result.setdefault('schema', 'rsim.value.v1')
+        if source_kind == 'shared_device':
+            result.setdefault('schema', 'rsim.value.v1')
+        elif result.get('bundle_stream') not in (None, 'color', 'depth'):
+            raise ValueError('bundle_stream must select color or depth')
         if not isinstance(result['port'], str) or not result['port']:
             raise ValueError('source port must be a nonempty string')
         if result.get('transport') is not None:
@@ -264,9 +268,19 @@ def connect_source(reference, *, kind, ros=None):
     from rsim.transport.descriptor import TransportConfig
     name = settings['port']
     transport = settings.get('transport')
+    transport = TransportConfig(**transport) if transport is not None else None
+    if settings['kind'] == 'shared_sensor':
+        from rsim.runtime.host import SharedSensor
+        source = SharedSensor(key=settings['key'], version=settings['version'], history=settings['history'],
+                              output_name=name, transport=transport)
+        if settings.get('bundle_stream') is not None:
+            from rsim.devices.realsense import _ImageStream
+            source = _ImageStream(source, settings['bundle_stream'], hz=100, history=settings['history'])
+        source.output.clock = settings['clock']
+        return source.output
     device = SharedComponent(key=settings['key'], interface_version=settings['interface_version'],
         ports={name: PortSpec(schema=settings['schema'], clock=settings['clock'], history_capacity=settings['history'])},
-        transport=TransportConfig(**transport) if transport is not None else None)
+        transport=transport)
     return getattr(device, name)
 
 
@@ -289,3 +303,29 @@ def validate_resources(resources):
     for path, digest in resources.items():
         if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
             raise ValueError(f'configuration resource changed; recreate factory: {path}')
+
+
+def shared_ros_context(ros=None, *dependencies):
+    """Reuse the sole injected ROS owner; reject graphs with conflicting owners."""
+    from rsim.core import Component
+    from rsim.core.signal import as_signal
+    from rsim.adapters.ros2 import RosContext
+    if ros is not None and not isinstance(ros, RosContext):
+        raise TypeError('ros must be a RosContext')
+    contexts, seen = set(), set()
+    def visit(value):
+        if value is None:
+            return
+        node = value if isinstance(value, Component) else as_signal(value).producer
+        if node in seen:
+            return
+        seen.add(node)
+        if isinstance(node, RosContext):
+            contexts.add(node)
+        for dependency in (*node.dependencies, *(port.producer for port in node.inputs)):
+            visit(dependency)
+    for dependency in (ros, *dependencies):
+        visit(dependency)
+    if len(contexts) > 1:
+        raise ValueError('injected graph must share one RosContext')
+    return ros if ros is not None else next(iter(contexts), None) or RosContext(max_callbacks=8)

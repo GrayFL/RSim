@@ -1,3 +1,4 @@
+from rsim.drivers.mapping import MappingFactory
 import asyncio
 from types import SimpleNamespace
 
@@ -87,7 +88,7 @@ def test_mapping_public_pose_uses_fusion_frame_while_colorizer_retains_lio_frame
     inputs = Component()
     inputs.ros, inputs.prefix = None, '/test'
     observations = []
-    output = MappingOutput(inputs, frames=dict(odom='fused', lio='lio', base='base', map='map'),
+    output = MappingOutput(inputs, ports=MappingFactory.port_specs(), frames=dict(odom='fused', lio='lio', base='base', map='map'),
         T_base_imu=Pose(wrd_frame='base', ego_frame='imu'), database='test.db', assumptions={},
         mapping=SimpleNamespace(observe_pose=lambda t, p: observations.append(p)))
     native, filtered = Odometry(), Odometry()

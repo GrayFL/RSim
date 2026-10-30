@@ -81,12 +81,12 @@ provider = prepared.shared()
 | ROS2Topic | 已迁 `ROS2TopicFactory`；旧函数委托 | 真实 ROS2 话题中继未验收 |
 | STM32 | 已迁 `STM32Factory`；旧函数委托 | 构造/声明/安全配置已验，真实 ROS2/固件未验收 |
 | Chassis | 已迁 `ChassisFactory`；旧函数委托 | 兼容仿真已转 pyrobo；实机控制不在本轮测试范围 |
-| Mapper | **deferred**：保留原入口 | `mapping_graph` 构造中创建目录及 RTAB YAML；完整声明仍来自既有 `devices.mapping.mapping_ports`。先把资源准备和生命周期分开，再将完整声明迁至本地类工厂 |
-| Odometry | **deferred**：保留原入口 | `InertialOdometry` / `ScanOdometry` 构造写 YAML；还接收活动 ROS context、缓存与扫描估计器。需先把文件写入移至 open/显式准备，注入资源留在 build |
-| NativeChassis | **deferred**：保留原组合入口 | 依赖上述 Odometry 构造副作用；自身也创建目录并组装活动资源。需先解决底层配置文件生命周期 |
-| TopicChassis | **deferred**：保留原组合入口 | 依赖 NativeChassis/Odometry；必须保持仅订阅已运行硬件、禁止启动硬件的现有检查 |
+| Mapper | 已迁 `MappingFactory`，接口 v2 | 构图无文件副作用；真实 ROS2 SLAM 未验收 |
+| Odometry / ScanOdometry | 已迁对应 Factory，完整声明显式注入适配器 | 真实 ROS2 EKF/ICP 未验收 |
+| NativeChassis | 已迁 `NativeChassisFactory`，返回 Component 组合图 | 实机驱动与运动未验收 |
+| TopicChassis | 已迁 `TopicChassisFactory`，只连接已有设备 | 原生话题/硬件激活未验收 |
 
-后四项不以仅增加反向调用旧函数的类包装冒充迁移完成。`local_chassis.build/sources/calibrate` 是应用装配和标定辅助函数，不作为设备工厂登记；MuJoCo 入口由独立的兼容迁移记录管理。没有新增中央注册表。
+复杂 Factory 的配置格式、真实重建测试、资源清理及 breaking 变化见[复杂 Factory 生命周期](complex-factories.md)。`local_chassis.build/sources/calibrate` 是应用装配和标定辅助函数，不作为设备工厂登记；MuJoCo 入口由独立的兼容迁移记录管理。没有新增中央注册表。
 
 ## 验证范围
 

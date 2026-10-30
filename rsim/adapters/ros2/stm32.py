@@ -141,6 +141,8 @@ class Stm32Chassis(PrimaryComponent):
                 future.cancel()
 
     async def _apply_velocity(self, envelope):
+        if envelope.source_bound is not None:
+            raise CommandRejected('STM32 hardware has no simulation source context for source_bound')
         from rsim_stm32.srv import SetVelocity
         value = envelope.value
         if not isinstance(value, VelocityCommand):
