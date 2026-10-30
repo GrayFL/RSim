@@ -41,6 +41,8 @@ def test_slow_clock_samples_do_not_refresh_the_bound():
 def test_service_rejects_hardware_start_before_constructing_graph(tmp_path, kind):
     settings = yaml.safe_load((ROOT/'examples/control/chassis_topics.example.yaml').read_text())
     settings['chassis'].setdefault(kind, {})['start_driver'] = True
+    if kind == 'scan':
+        settings['chassis']['scan']['topic'] = '/scan'
     path = tmp_path/'service.yaml'
     path.write_text(yaml.safe_dump(settings))
     with pytest.raises(ValueError, match='forbidden'):
@@ -65,8 +67,9 @@ def test_topic_service_graph_only_contains_algorithm_driver(tmp_path):
         pending.extend(node.dependencies)
         pending.extend(signal.producer for signal in node.inputs)
     assert drivers == ['robot_localization']
-    assert sorted(relays) == sorted(['ros2-topic:imu:/rsim/chassis/imu/data',
-        'ros2-topic:odom:/rsim/chassis/odom', 'ros2-topic:state:/rsim/chassis/diagnostics'])
+    # Topic recipes connect existing ROS topics. Relay ownership is an explicit
+    # deployment choice; constructing the service must not start extra providers.
+    assert relays == []
     assert robot.chassis.remote_clock
 
 
