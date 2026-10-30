@@ -38,7 +38,6 @@ class InertialOdometry(Component):
                  parameters=None, input_timeout=.3, history=512,
                  use_orientation=True, use_acceleration=True, lateral_acceleration=False,
                  pose_history=None, covariance_history=None):
-        import yaml
         if not prefix.startswith('/') or prefix == '/' or not world_frame or not body_frame or world_frame == body_frame:
             raise ValueError('odometry requires a namespace and distinct world/body frames')
         if not np.isfinite(input_timeout) or input_timeout <= 0:
@@ -78,11 +77,8 @@ class InertialOdometry(Component):
             raise ValueError(f'odometry owns frame/input contract: {sorted(conflicts)}')
         config.update(contract)
         directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory/'ekf-parameters.yaml'
-        path.write_text(yaml.safe_dump({'/**': {'ros__parameters': config}}))
         self.driver = Driver('robot_localization', 'ekf_node', key='odometry:'+prefix,
-                             ros_args=['--params-file', str(path)], log_path=directory/'ekf.log',
+                             generated_parameters=config, log_path=directory/'ekf.log',
                              remappings={'__ns': prefix, 'odometry/filtered': prefix+'/filtered'})
         self.filtered = RosSensor(prefix+'/filtered', 'odom', ros=self.ros, clock='ros:system', history=history, hz=500)
         super().__init__(self.ros, self.driver, *((scan,) if scan else ()),

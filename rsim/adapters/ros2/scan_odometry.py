@@ -28,7 +28,6 @@ class ScanOdometry(Component):
     def __init__(self, ros, *, prefix, mount, directory, parameters=None,
                  wheel_topic=None, scan_topic=None, odom_frame=None):
         from graphmap.pose import Pose
-        import yaml
         self.ros, self.prefix = ros, prefix
         self.mount = Pose(**mount) if isinstance(mount, dict) else mount
         if (not np.isfinite(self.mount.matrix).all() or self.mount.scale != 1 or self.mount.wrd_frame != 'base_footprint'
@@ -40,7 +39,6 @@ class ScanOdometry(Component):
         self.wheel_topic = wheel_topic or prefix+'/wheel_odom'
         self.scan_topic = scan_topic or prefix+'/scan'
         directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
         config = {'Reg/Force3DoF': 'true', 'Icp/PointToPlane': 'true',
             'Icp/PointToPlaneK': '10', 'Icp/MaxCorrespondenceDistance': '0.2',
             'Icp/CorrespondenceRatio': '0.2', 'Icp/VoxelSize': '0.03',
@@ -55,10 +53,8 @@ class ScanOdometry(Component):
         if conflicts:
             raise ValueError(f'scan component owns these parameters: {sorted(conflicts)}')
         config.update(reserved)
-        parameter_file = directory / 'scan2d-parameters.yaml'
-        parameter_file.write_text(yaml.safe_dump({'/**': {'ros__parameters': config}}))
         self.driver = Driver('rtabmap_odom', 'icp_odometry', key='mapping:scan2d:' + prefix,
-            ros_args=['--params-file', str(parameter_file)], log_path=directory/'scan2d.log',
+            generated_parameters=config, log_path=directory/'scan2d.log',
             remappings={'__ns': self.local, 'scan': self.local+'/scan',
                         '/tf': self.local+'/tf', '/tf_static': self.local+'/tf_static'})
         from .sensor import RosSensor

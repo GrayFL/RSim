@@ -282,7 +282,9 @@ def test_mapping_recipe_passes_native_parameters_and_transform(tmp_path, recorde
     np.testing.assert_allclose(lio.parameters['lio.extrinsic.lidar_imu'][:3], T_imu_lidar.position)
     np.testing.assert_allclose(lio.parameters['lio.extrinsic.lidar_imu'][3:], T_imu_lidar.matrix[:3, :3].ravel(order='F'))
     assert lio.parameters['lio.extrinsic.odom_robo'][-1] == pytest.approx(30.)
-    params = yaml.safe_load((tmp_path/'rtabmap-parameters.yaml').read_text())['/**']['ros__parameters']
+    rtabmap = next(child for child in graph.children if getattr(child, 'package', None) == 'rtabmap_slam')
+    params = rtabmap.generated_parameters.parameters
+    assert not (tmp_path/'rtabmap-parameters.yaml').exists()
     assert params['Grid/3D'] == 'false'
     assert params['database_path'] == str(tmp_path/'map.db')
     assert params['subscribe_rgb'] and params['subscribe_scan_cloud']

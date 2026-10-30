@@ -61,7 +61,8 @@ def estimator(tmp_path, **kwargs):
 def test_native_filter_contract_avoids_duplicate_wheel_pose(tmp_path):
     import yaml
     c = estimator(tmp_path, parameters={'frequency': 40.})
-    p = yaml.safe_load((tmp_path/'ekf-parameters.yaml').read_text())['/**']['ros__parameters']
+    p = c.driver.generated_parameters.parameters
+    assert not (tmp_path/'ekf-parameters.yaml').exists()
     assert p['frequency'] == 40.
     assert [i for i, enabled in enumerate(p['odom0_config']) if enabled] == [6, 7, 11]
     assert [i for i, enabled in enumerate(p['imu0_config']) if enabled] == [5, 11, 12]

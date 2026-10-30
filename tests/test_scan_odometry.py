@@ -46,7 +46,8 @@ def test_private_tf_and_native_frame_contract(tmp_path):
     assert c.driver.remappings['/tf']=='/rsim/test/scan2d/tf'
     assert c.driver.remappings['/tf_static']=='/rsim/test/scan2d/tf_static'
     import yaml
-    params=yaml.safe_load((tmp_path/'scan2d-parameters.yaml').read_text())['/**']['ros__parameters']
+    params=c.driver.generated_parameters.parameters
+    assert not (tmp_path/'scan2d-parameters.yaml').exists()
     assert params['frame_id']=='base_footprint'
     assert params['odom_frame_id']==c.odom_frame
     assert params['deskewing'] and not params['publish_tf']

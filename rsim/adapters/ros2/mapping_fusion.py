@@ -34,7 +34,6 @@ class MappingFusion(Component):
     def __init__(self, ros, scan, *, prefix, frames, mount, directory,
                  history, covariance_history, wheel_history, gyro_history,
                  parameters=None, max_wait_s=5., pending_capacity=256):
-        import yaml
         if max_wait_s <= 0 or not np.isfinite(max_wait_s) or pending_capacity < 2:
             raise ValueError('invalid fusion buffering bounds')
         self.ros, self.scan = ros, scan
@@ -64,10 +63,8 @@ class MappingFusion(Component):
         if conflicts:
             raise ValueError(f'fusion component owns these parameters: {sorted(conflicts)}')
         config.update(contract)
-        path = Path(directory)/'fusion-parameters.yaml'
-        path.write_text(yaml.safe_dump({'/**': {'ros__parameters': config}}))
         self.driver = Driver('robot_localization', 'ekf_node', key='mapping:fusion:'+prefix,
-            ros_args=['--params-file', str(path)], log_path=Path(directory)/'fusion.log',
+            generated_parameters=config, log_path=Path(directory)/'fusion.log',
             remappings={'__ns': self.local, 'odometry/filtered': self.local+'/odom'})
         super().__init__(ros, scan, self.driver)
         self.subscriptions = []

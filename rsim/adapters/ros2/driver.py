@@ -4,7 +4,7 @@ import signal
 import sys
 from pathlib import Path
 from rsim.core import Component, ComponentError
-from .arguments import RosArguments
+from .arguments import GeneratedParameters, RosArguments
 
 class Driver(Component):
     """Direct native executable launch, guarded against parent death on Linux."""
@@ -18,24 +18,30 @@ class Driver(Component):
             key,
             log_path=None,
             remappings=None,
-            ros_args=None
+            ros_args=None,
+            generated_parameters=None,
         ):
         super().__init__(key=key)
         self.package, self.executable = package, executable
         self.options = parameters if isinstance(parameters, RosArguments) else RosArguments(
             parameters, ros_args, remappings)
         self.parameters = self.options.parameters
+        self.generated_parameters = (generated_parameters if isinstance(generated_parameters, GeneratedParameters)
+                                     else GeneratedParameters(generated_parameters)
+                                     if generated_parameters is not None else None)
+        self._parameter_file = None
         self.log_path = log_path
         self.remappings = self.options.remappings
         self.process = self._log = None
         self._device_lease = None
 
     def configuration(self):
-        return super().configuration(), self.package, self.executable, self.options.signature()
+        return (super().configuration(), self.package, self.executable, self.options.signature(),
+                self.generated_parameters.digest if self.generated_parameters is not None else None)
 
     def __getstate__(self):
         state = super().__getstate__()
-        state.update(process=None, _log=None, _device_lease=None)
+        state.update(process=None, _log=None, _device_lease=None, _parameter_file=None)
         return state
 
     async def open(self):
@@ -44,20 +50,25 @@ class Driver(Component):
         executable = Path(
             get_package_prefix(self.package)
             ) / "lib" / self.package / self.executable
-        args = [str(executable), *self.options.arguments()]
-        self._device_lease = acquire_device(self.key)
-        if self.log_path:
-            self._log = open(self.log_path, "a")
-        self.process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "rsim.platforms.linux.exec",
-            str(os.getpid()),
-            *args,
-            stdout=self._log or asyncio.subprocess.DEVNULL,
-            stderr=self._log or asyncio.subprocess.DEVNULL
-            )
-        self.task("driver-health", self.check, hz=20)
+        try:
+            args = self.options.arguments()  # Recheck user-owned file digests.
+            self._device_lease = acquire_device(self.key)
+            if self.generated_parameters is not None:
+                self._parameter_file = self.generated_parameters.materialize()
+                self._parameter_file.validate()
+                args = ['--ros-args', '--params-file', str(self._parameter_file.path), '--', *args]
+            if self.log_path:
+                Path(self.log_path).parent.mkdir(parents=True, exist_ok=True)
+                self._log = open(self.log_path, "a")
+            self.process = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "rsim.platforms.linux.exec", str(os.getpid()),
+                str(executable), *args,
+                stdout=self._log or asyncio.subprocess.DEVNULL,
+                stderr=self._log or asyncio.subprocess.DEVNULL)
+            self.task("driver-health", self.check, hz=20)
+        except BaseException:
+            await self.close()
+            raise
 
     async def check(self):
         if self.process.returncode is not None:
@@ -84,3 +95,6 @@ class Driver(Component):
             if self._device_lease is not None:
                 self._device_lease.close()
                 self._device_lease = None
+            if self._parameter_file is not None:
+                self._parameter_file.close()
+                self._parameter_file = None

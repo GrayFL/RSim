@@ -1,9 +1,12 @@
 """Native driver arguments; importing this module does not import ROS."""
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 def parameter_text(value):
@@ -24,6 +27,64 @@ def parameter_text(value):
     if type(value) is int and not -(2**63) <= value < 2**63:
         raise ValueError("ROS integer parameters must fit in int64")
     return json.dumps(value, ensure_ascii=False, allow_nan=False)
+
+
+@dataclass(frozen=True, init=False)
+class GeneratedParameters:
+    """An immutable ROS parameter document, with no file until driver open.
+
+    JSON is a YAML subset and preserves native parameter types and slash names.
+    Unlike an external params-file this document is owned by the recipe; each
+    runtime session materializes and cleans only its own private directory.
+    """
+    document: str
+    digest: str
+
+    def __init__(self, parameters, *, node='/**'):
+        if not isinstance(node, str) or not node.startswith('/'):
+            raise ValueError('generated ROS parameter node must be absolute')
+        values = dict(parameters)
+        for name, value in values.items():
+            if not isinstance(name, str) or not name or ':=' in name:
+                raise ValueError('invalid generated ROS parameter name')
+            parameter_text(value)
+        document = json.dumps({node: {'ros__parameters': values}}, sort_keys=True,
+                              ensure_ascii=False, allow_nan=False, indent=2) + '\n'
+        object.__setattr__(self, 'document', document)
+        object.__setattr__(self, 'digest', hashlib.sha256(document.encode()).hexdigest())
+
+    @property
+    def parameters(self):
+        return next(iter(json.loads(self.document).values()))['ros__parameters']
+
+    def materialize(self):
+        return ParameterFile(self)
+
+
+class ParameterFile:
+    """One driver's private session file; never points to a user directory."""
+    def __init__(self, document):
+        self._directory = TemporaryDirectory(prefix='rsim-ros-parameters-')
+        self.path = Path(self._directory.name) / 'parameters.yaml'
+        self.digest = document.digest
+        try:
+            pending = self.path.with_suffix('.pending')
+            with pending.open('xb') as file:
+                file.write(document.document.encode())
+                file.flush()
+                os.fsync(file.fileno())
+            pending.replace(self.path)
+            self.validate()
+        except BaseException:
+            self.close()
+            raise
+
+    def validate(self):
+        if hashlib.sha256(self.path.read_bytes()).hexdigest() != self.digest:
+            raise ValueError('generated ROS parameter file changed before launch')
+
+    def close(self):
+        self._directory.cleanup()
 
 
 class RosArguments:

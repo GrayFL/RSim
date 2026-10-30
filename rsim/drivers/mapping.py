@@ -200,11 +200,8 @@ def mapping_graph(*, connection, lidar_ip, mounts, database, name, timing, topic
         raise ValueError('laser depth generation requires rectified RTAB RGB; enable ImagesAlreadyRectified')
     # RTAB-Map uses names such as Grid/3D, which the ROS CLI -p lexer rejects.
     # Native YAML parameter files preserve these names and their string values.
-    import yaml
-    parameter_file = directory / 'rtabmap-parameters.yaml'
-    parameter_file.write_text(yaml.safe_dump({'/**': {'ros__parameters': native_rtabmap}}))
     rtabmap = Driver('rtabmap_slam', 'rtabmap', key='mapping:rtabmap:' + name,
-        ros_args=['--params-file', str(parameter_file)],
+        generated_parameters=native_rtabmap,
         remappings={'__ns': prefix, 'rgb/image': prefix + '/keyframe/rgb',
             'rgb/camera_info': prefix + '/keyframe/camera_info', 'odom': prefix + '/keyframe/odom',
             'scan_cloud': prefix + '/keyframe/scan'},
