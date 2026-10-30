@@ -162,6 +162,37 @@ class LostReply:
         return response
 
 
+class FailingStage(StageEndpoint):
+    def __init__(self, failure):
+        super().__init__('compute')
+        self.failure = failure
+
+    async def compute(self, req):
+        if req.context.episode == 0:
+            if self.failure == 'retired':
+                raise StageFailed('input generation retired during computation', reason='retired')
+            asyncio.current_task().cancel()
+            await asyncio.sleep(0)
+        return {'recovered': True, 'pid': os.getpid()}
+
+
+@pytest.mark.parametrize('failure', ['retired', 'self_cancel'])
+@pytest.mark.parametrize('placed', [False, True])
+def test_callback_retirement_or_self_cancellation_keeps_management_alive_for_explicit_reset(failure, placed):
+    async def run():
+        stage = FailingStage(failure)
+        placement = {stage: ProcessPlacement('recoverable-stage')} if placed else None
+        async with Runtime(stage.stage_request, placement=placement):
+            with pytest.raises(CommandRejected) as failure_reply:
+                await stage.run_stage(request())
+            await stage.reset_stage(request(episode=1).context)
+            ack = StageAck.from_mapping(await stage.run_stage(request(episode=1)))
+            assert ack.result['recovered']
+            assert failure_reply.value.reason == ('stale_context' if failure == 'retired' else 'cancelled')
+            assert (await stage.describe_stage())['phase'] == 'COMPLETED'
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('placed', [False, True])
 def test_barrier_recovers_lost_reply_via_real_endpoint_without_duplicate_computation(placed):
     async def run():
@@ -273,4 +304,20 @@ def test_worker_exit_aborts_waiting_barrier_and_does_not_ack_next_stage():
             assert barrier.phase == 'ABORTED' and not barrier.acks
             with pytest.raises(StageFailed):
                 barrier.complete()
+    asyncio.run(run())
+
+
+def test_barrier_rejects_an_ack_that_claims_completion_in_the_future():
+    async def run():
+        class FutureReply:
+            async def set(self, value, *, ttl):
+                req = StageRequest.from_mapping(value)
+                now = time.monotonic_ns()
+                return StageAck(req.context, req.task_id, req.input_revision,
+                                now, now+100_000_000_000).to_dict()
+        barrier = StageBarrier(['compute'], context=request().context)
+        barrier.begin(request().context)
+        with pytest.raises(StageFailed, match='completion time'):
+            await barrier.call(FutureReply(), request())
+        assert barrier.phase == 'ABORTED' and not barrier.acks
     asyncio.run(run())

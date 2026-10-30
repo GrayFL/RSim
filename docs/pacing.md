@@ -85,7 +85,9 @@ acks = barrier.complete()
 
 每个 call 验证 ACK 的 context/task/revision 完全吻合。`timeout` 是每个阶段的主机预算，`retries` 限定丢响应后的相同请求重试次数，`request_ttl` 限定管理命令租期。重试只更换传输 envelope，不更换逻辑请求或延长已经开始的计算期限。全部阶段完成后，调用方才接受命令并请求固定物理子步；资源 DAG 不决定这个顺序。屏障超时/取消/worker 故障后 ABORTED，须停止 owner，再 reset 源和各 endpoint，最后 `barrier.reset(new_context)`。不能将 worker 的 DDS 收包当成计算完成。
 
-`StageFailed.reason='stale_context'` 表示逻辑 source context 过旧，与命令通道 controller epoch 的 `retired` 不同。管理端口拒绝一个旧上下文后，仍允许同一客户端提交新上下文；真正已退役的运动控制器继续被拒绝。`StageExecutor` 与 `StageBarrier` 不可序列化，必须在所属 worker/coordinator 内创建。诊断提供有限 ACK 缓存、high_water、实际阶段耗时，以及 barrier 的调用耗时/尝试次数。原始重放、单进程 ACK 与 Stage 协议测试分别验证各自边界；通用阶段测试不能替代应用的跨进程导航验收。
+`StageFailed.reason='stale_context'` 表示逻辑 source context 过旧，与命令通道 controller epoch 的 `retired` 不同。管理端口也将计算回调抛出的 `retired` 转为 `stale_context`，拒绝旧上下文后仍允许同一客户端 reset；真正已退役的运动控制器继续被拒绝。回调内部自行取消成为缓存的 ABORTED/`cancelled` 计算失败，不会退出管理服务；外部调用方取消仍等待有界事务完成后传播。ACK 的完成时间必须不晚于同主机接收时间及阶段 deadline；缓存 ACK 可早于本次重试开始。
+
+`StageExecutor` 与 `StageBarrier` 不可序列化，必须在所属 worker/coordinator 内创建。诊断提供有限 ACK 缓存、high_water、实际阶段耗时，以及 barrier 的调用耗时/尝试次数。原始重放、单进程 ACK 与 Stage 协议测试分别验证各自边界；通用阶段测试不能替代应用的跨进程导航验收。
 
 回归入口：`tests/test_pacing.py`、`tests/test_source_pacing.py`、`tests/test_replay_lockstep.py`、`tests/test_strict_lockstep.py`、`tests/test_stages.py`、`tests/test_episode_history.py`、`tests/test_epoch_forwarding.py`。软件性能可用 `python -m tools.benchmark_pacing --output assets/pacing.json` 测量；结果包含多频率、组件数、数据大小、进程模式和负载。跨进程的观察采用 latest，parent CPU 不冒充整机/所有 worker 的 CPU。
 # Source-time command intervals

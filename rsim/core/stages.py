@@ -209,9 +209,13 @@ class StageExecutor:
                 return deepcopy(ack)
             except BaseException as error:
                 self.phase, self.error = 'ABORTED', str(error) or type(error).__name__
-                reason = 'expired' if isinstance(error, TimeoutError) else getattr(error, 'reason', 'invalid')
+                reason = ('cancelled' if isinstance(error, asyncio.CancelledError) else
+                          'expired' if isinstance(error, TimeoutError) else getattr(error, 'reason', 'invalid'))
                 self._remember(request, (self.error, reason))
-                if isinstance(error, asyncio.CancelledError):
+                # The owner task is shielded from caller cancellation. A
+                # cancellation raised inside the callback is a failed compute,
+                # not a request to terminate the endpoint's management service.
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
                     raise
                 raise StageFailed(self.error, reason=reason) from error
 
@@ -283,7 +287,10 @@ class StageBarrier:
                     ack = StageAck.from_mapping(reply)
                     if ack.request != request:
                         raise StageFailed('stage ACK context/task/input revision mismatch')
-                    if time.monotonic_ns() >= deadline:
+                    received = time.monotonic_ns()
+                    if ack.finished_ns > received or ack.finished_ns >= deadline:
+                        raise StageFailed('stage ACK completion time is in the future or beyond the host deadline')
+                    if received >= deadline:
                         raise TimeoutError('stage ACK arrived after barrier deadline')
                     self.acks.append(ack)
                     self.index += 1

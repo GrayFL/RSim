@@ -39,7 +39,12 @@ class StageEndpoint(Component):
             return (await self.executor.execute(StageRequest.from_mapping(value),
                                                  deadline_ns=envelope.deadline_ns)).to_dict()
         except (StageFailed, ValueError, TypeError) as error:
-            raise CommandRejected(str(error), reason=getattr(error, 'reason', 'invalid')) from error
+            reason = getattr(error, 'reason', 'invalid')
+            if reason == 'retired':
+                # Input generation retirement does not retire this management
+                # client's transport controller; it must still be able to reset.
+                reason = 'stale_context'
+            raise CommandRejected(str(error), reason=reason) from error
 
     async def run_stage(self, request, *, ttl=None):
         return await self.stage_request.set(StageRequest.from_mapping(request).to_dict(), ttl=ttl)
