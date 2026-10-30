@@ -30,6 +30,9 @@ _EXPORTS = {
     'SingleProcessStepper': ('rsim.core.lockstep', 'SingleProcessStepper'),
     'StepContext': ('rsim.core.lockstep', 'StepContext'),
     'StepAck': ('rsim.core.lockstep', 'StepAck'),
+    'CommandIdentity': ('rsim.core.lockstep', 'CommandIdentity'),
+    'CommandAccepted': ('rsim.core.lockstep', 'CommandAccepted'),
+    'PhysicsAdvanced': ('rsim.core.lockstep', 'PhysicsAdvanced'),
     'ReplaySource': ('rsim.components.replay', 'ReplaySource'),
     'ReplaySample': ('rsim.components.replay', 'ReplaySample'),
     'Reference': ('rsim.core', 'Reference'),
@@ -151,7 +154,8 @@ __all__ += ["SampleId", "PortNotBound", "ProviderDisconnected"]
 __all__ += ['SharedComponent', 'SharedProvider', 'PortSpec', 'serve_shared', 'describe_shared']
 __all__ += ['ComponentFactory', 'validate_component_ports', 'ChassisPortsDevice']
 __all__ += ['Pacer', 'PacerClosed', 'PacerReset', 'Tick', 'TickSource', 'SignalPacer', 'RealTimePacer']
-__all__ += ['SingleProcessStepper', 'StepContext', 'StepAck']
+__all__ += ['SingleProcessStepper', 'StepContext', 'StepAck', 'CommandIdentity',
+            'CommandAccepted', 'PhysicsAdvanced']
 __all__ += ['RatePacer']
 __all__ += ['FrameTickPacer']
 __all__ += ['SourceCommandBound']

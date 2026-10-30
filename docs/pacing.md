@@ -34,17 +34,34 @@ Pacer 提供 async `tick()` 与 `aclose()`。每个任务在所属 worker 的 `o
 
 本地流水线可使用 `FrameTickPacer(signal, subscription)`，从独立TickSubscription领取tick后等待上游真正发布对应session/episode/step/stamp/clock的Frame，回调仍读取 `last_frame` 与 `elapsed_ns`。它解决订阅者唤醒顺序不同的问题，不是计算或命令ACK。every要求上游频率与Signal有界history容量足够保留目标Frame；已丢失时明确HistoryMiss。latest可合并失去匹配的旧tick并计skipped。reset和源失败也会中断等待旧上游Frame；关闭同时释放订阅和等待任务。应用必须验证订阅与源在同一worker，不得将本地TickSource序列化后当作跨进程背压。
 
-`every` 确认的是 tick 交付，不能据此宣称算法和命令已完成。默认实时导航、加速物理源与严格锁步是不同模式；现有 pyrobo 导航仍按其显式执行配置运行，完整加速导航还需同步接入环境 Pacer 和到期策略。
+`every` 确认的是 tick 交付，不能据此宣称算法和命令已完成。默认实时导航、加速物理源与严格锁步是不同模式；应用需按其模式显式装配计算、命令接纳和物理推进。
 
 `rsim.components.replay.ReplaySource` 消费 `ReplaySample(stamp_ns, data, metadata)` 快照，也可显式 `from_jsonl(path, clock=...)` 加载 JSON 记录。`pause/resume/set_rate/seek` 均为 async；seek 清空历史、增加 episode，保留原始 stamp 和读者 sequence。EOF 等待 seek/close。暂停和 EOF 不会为已发送命令续租，消费者还须检查数据新鲜度。
 
 回放的 `host_monotonic_ns` 记录当前发布时刻，原记录中的该值转存 `recorded_host_monotonic_ns`，避免旧录制时间使新回放输入永久陈旧。payload 内已有命令的原 deadline 保持不变，过期命令不能因回放重新生效。
 
-`SingleProcessStepper` 是显式顺序执行工具：sample(k) → compute(k) → accept(command(k)) → advance(k+1)。accept 必须在真正接纳后返回匹配当前 session/episode/step 的 `StepAck(context, "command")`；超时、失败、取消先调用 stop 并中止会话，恢复须显式 reset。它不改变资源 DAG，不替调用方推进模型。确定性仍要求固定 seed、逻辑预算和稳定结果选择；本轮未实现跨进程 ACK 屏障，也未宣称 MuJoCo 导航已支持严格锁步。
+`SingleProcessStepper` 是显式顺序执行工具：sample(k) → compute(k) → accept(command(k)) → advance(k+1)。默认保留 `StepAck(context, "command")` 的旧回调模式。需要证明真实闭环时，使用提供端的真实 `StepContext` 并显式启用严格模式：
+
+```python
+from rsim import SingleProcessStepper, StepContext
+
+runner = SingleProcessStepper(
+    sample=sample, compute=compute, accept=accept, advance=advance, stop=stop,
+    context=StepContext.from_mapping(source_description['context']),
+    require_physics_ack=True, requested_substeps=10,
+)
+await runner.step()
+```
+
+严格模式的 `accept(context, command)` 必须在最终 owner 验证并保存命令后返回 `CommandAccepted(context, command_id, deadline_ns, source_deadline_ns=None, port=None)`。`command_id` 是 `CommandIdentity(controller_id, controller_epoch, sequence)`。`advance(context, accepted)` 使用这一身份请求固定数量子步，并在积分及发布完成后返回 `PhysicsAdvanced(request_context, context, command_id, requested_substeps, actual_substeps, physical_substeps, stamp_ns, phase='READY', state=None)`。提供端也可返回这些对象的 `to_dict()` JSON 形式；协调器使用 `from_mapping()` 验证，`state` 对 RSim 是不透明摘要。命令接受回调负责将实际发送的命令与 ACK 关联，协调器核对物理 ACK 使用完全相同的身份。
+
+只有同 session/episode 的下一控制边界、完整子步数、相同命令身份、递增源时间且不越过固定 source deadline 才能完成严格一步。`last_command_ack`、`last_physics_ack`、`trace` 与 `timings`（各阶段主机开始/结束 ns）可用于审计。两种 ACK 含义不同；收到命令、tick 或不完整推进均不能构造成功的物理 ACK。构造 `StepContext` 现在拒绝空 session、布尔或负数 step/episode。
+
+超时、失败、取消会调用 `stop()` 并中止会话；若已发起推进却没有验证到匹配结果，`needs_synchronization=True`，不能据此认为物理没有推进。应查询提供端已提交状态或 reset；只有显式 `runner.reset(reset_source)` 才恢复此协调器。严格模式的 reset 回调必须返回源实际新 session/episode 的 step zero context，不能由协调器推测。reset 同时淘汰协调器保留的 ACK。它不改变资源 DAG，不替调用方推进模型；确定性仍要求固定 seed、逻辑预算和稳定结果选择。此工具本身不提供跨进程计算屏障。
 
 阶段间显式复核主机 deadline，避免阻塞回调或吞掉取消后继续接受命令。停止/reset 是有预算的独立事务，重复取消也先等待事务结束再向调用方传播。它无法抢占同步阻塞或保证硬实时；实际执行器仍需自己的 host deadline 检查。
 
-回归入口：`tests/test_pacing.py`、`tests/test_source_pacing.py`、`tests/test_replay_lockstep.py`、`tests/test_episode_history.py`、`tests/test_epoch_forwarding.py`。软件性能可用 `python -m tools.benchmark_pacing --output assets/pacing.json` 测量；结果包含多频率、组件数、数据大小、进程模式和负载。跨进程的观察采用 latest，parent CPU 不冒充整机/所有 worker 的 CPU。
+回归入口：`tests/test_pacing.py`、`tests/test_source_pacing.py`、`tests/test_replay_lockstep.py`、`tests/test_strict_lockstep.py`、`tests/test_episode_history.py`、`tests/test_epoch_forwarding.py`。软件性能可用 `python -m tools.benchmark_pacing --output assets/pacing.json` 测量；结果包含多频率、组件数、数据大小、进程模式和负载。跨进程的观察采用 latest，parent CPU 不冒充整机/所有 worker 的 CPU。
 # Source-time command intervals
 
 `CommandEnvelope` accepts an optional `source_bound=SourceCommandBound(context,
