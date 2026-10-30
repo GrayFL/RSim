@@ -80,6 +80,12 @@ remains the provider's responsibility. A provider without the specified source
 context must reject the bounded command. This is validity metadata, not a
 command-acceptance or physical-advance acknowledgement.
 
+An owner that queues command application behind a reset must also compare its
+generation before and after acquiring the owner lock, including commands without
+a source bound. `CommandGuard.retire()` records a lifecycle boundary. A rejected
+application cannot roll back a concurrent reset to the older controller lease;
+the new retirement and disarmed state take precedence.
+
 `Connect` and the closed-schema shared transport preserve the bound. `CommandMux`
 may choose a new controller identity but keeps the selected source bound and
 never extends the original host deadline. Adapters changing payloads should use

@@ -90,6 +90,43 @@ def test_rejected_source_bound_cannot_extend_an_existing_motion_lease():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('reason', ['retired', 'invalid'])
+def test_owner_reset_during_apply_cannot_be_undone_by_rejection_rollback(reason):
+    """The owner's reset may retire leases while apply waits on its world lock."""
+    async def run():
+        actuator = Component()
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def apply(command):
+            if command.controller_id == 'pending':
+                entered.set()
+                await release.wait()
+                raise CommandRejected('generation changed while waiting for owner', reason=reason)
+        sink = CommandSink(actuator, 'velocity', apply, fallback=VelocityCommand())
+        initial = CommandEnvelope(VelocityCommand(.1), 'previous', 'epoch', 1,
+                                  time.monotonic_ns() + 1_000_000)
+        assert await sink._accept(initial) is None
+        await asyncio.sleep(.005)
+        pending = CommandEnvelope(VelocityCommand(.2), 'pending', 'epoch', 1,
+                                  time.monotonic_ns() + 400_000_000)
+        task = asyncio.create_task(sink._accept(pending))
+        await entered.wait()
+        # A different owner transaction resets the source, exactly while the
+        # asynchronous command application has yielded on that owner's lock.
+        sink.guard.retire()
+        sink._armed = False
+        release.set()
+        assert isinstance(await task, CommandRejected)
+        assert sink.guard.owner is None and sink.guard.deadline_ns == 0
+        assert not sink._armed
+        for command in (initial, pending):
+            replay = replace(command, sequence=2, deadline_ns=time.monotonic_ns() + 100_000_000)
+            error = await sink._accept(replay)
+            assert isinstance(error, CommandRejected) and error.reason == 'retired'
+        fresh = replace(pending, controller_id='new', controller_epoch='new-generation')
+        assert await sink._accept(fresh) is None
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('placed', [False, True])
 def test_mux_connect_and_transport_preserve_original_source_bound(placed):
     async def run():

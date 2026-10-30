@@ -108,6 +108,7 @@ class CommandGuard:
         self.owner = None
         self.deadline_ns = 0
         self.sequences, self.retired = {}, set()
+        self._retirement_revision = 0
 
     def accept(self, command, *, now_ns=None):
         now = time.monotonic_ns() if now_ns is None else now_ns
@@ -137,6 +138,7 @@ class CommandGuard:
 
     def retire(self):
         """Closing a provider ends its lease and retires the previous session."""
+        self._retirement_revision += 1
         if self.owner is not None:
             self.retired.add(self.owner)
         self.owner, self.deadline_ns = None, 0
@@ -220,6 +222,7 @@ class CommandSink(Generic[T]):
             armed = self._armed
             previous_owner, previous_deadline = self.guard.owner, self.guard.deadline_ns
             was_retired = previous_owner in self.guard.retired
+            retirement_revision = self.guard._retirement_revision
             validated = False
             try:
                 self.guard.accept(command)
@@ -227,6 +230,12 @@ class CommandSink(Generic[T]):
                 self._armed = True
                 return await self._invoke(self.apply, command)
             except CommandRejected as error:
+                if validated and self.guard._retirement_revision != retirement_revision:
+                    # reset/close can retire the guard while apply waits on an
+                    # independent owner lock. That newer lifecycle decision
+                    # takes precedence over this request's rollback snapshot.
+                    self._armed = False
+                    return error
                 self._armed = armed
                 if validated:
                     # Payload/source checks happen at the final owner. Failure
