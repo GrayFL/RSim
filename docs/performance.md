@@ -10,12 +10,15 @@ python -m tools.benchmark_matrix run --output /absolute/path/results \
 
 输出目录必须不存在。`--cases core,pacer,ipc,factory,memory-realtime` 可选择子集；导航还包括 `memory-environment`、`memory-accelerated`、`memory-lockstep-local`、`memory-lockstep-process`，以及对应的 `mujoco-*`。加速运行分别测量 1、2、10 倍配置。core 按 AB/BA 顺序运行基线与候选，其余场景在相邻重复中倒序运行。不要同时运行其他性能基准或重测试。
 
+core 自比较可同时将 `--baseline` 和 `--candidate` 指向同一基线 checkout。测量全部停止后，运行 `python -m tools.summarize_matrix /absolute/path/results --output /absolute/path/summary.json` 生成 JSON 与 Markdown 表格；汇总再次核对实际物理 ACK/整数源步长，不改原始数据。汇总解析大文件会占用 CPU，应放在性能窗口之外。
+
 每次子进程保留四库实际导入位置、HEAD/工作区 diff 摘要、工具摘要、环境版本、CPU affinity、完整命令、配置/场景指纹、逐样本 JSON 和日志。`manifest.json` 记录全部运行及退出码。失败结果仍保留，不能只选择成功运行计算结论。
 
 指标口径：
 
 - 默认 task 的唤醒误差为实际 callback 开始减它所用 Metronome 的计划 deadline。RatePacer 使用其公开 deadline；源事件没有主机计划 deadline，jitter 为 null。测量包装仅安装于基准进程，会产生额外开销；基线和候选必须使用相同包装。
 - callback duration 是墙钟时间。`service:*` 包含等待请求时间，Connect 包含等待输入时间，不能当作纯计算时间。导航诊断的 compute 时间、StageAck 的实际阶段起止和调用端 RTT 分别保留。
+- 原始 command 行按所在进程保存。离线汇总的 `command_rtt_ms` 只统计协调进程调用，worker 内部端口调用单列为 `worker_endpoint_call_ms`；不能把服务端的局部等待与客户端往返混合成同一个延迟分位数。
 - 外部采样器每约 20ms 观察协调进程及所有后代，包括 worker、supervisor、store guard。CPU 是各 PID/create-time 身份在窗口内首次与末次样本之差的总和；进程消失后未采到的尾部 CPU 不在此数中。单样本的进程 CPU 为 null。RSS 是同时采样的总和，共享页可能重复计数；峰值为采样峰值，不能等同系统精确 high-water mark。
 - IPC bytes 是成功交给 Cyclone Endpoint 的实际 JSON UTF-8 字节数，排除 CDR、网络头及 DDS 重传。数组 mmap materialization 与 queue/history counters 保留在 Runtime 原始诊断中，不能把文件逻辑大小当作磁盘写入量。
 - GPU 和 native allocation 无可靠专用统计时明确为 null 并附原因。RSS 已含原生驻留内存，不能从中反推 allocator 分配量。
