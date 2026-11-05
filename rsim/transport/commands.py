@@ -87,7 +87,11 @@ class CommandClient(Component):
             async with asyncio.timeout(max(0, (envelope.deadline_ns - time.monotonic_ns()) / 1e9)):
                 await self.ready.wait()
                 descriptor = self.store.put(Frame(envelope, time.monotonic_ns(), "host:monotonic"))
-                return await self.request({"op": "set", "data": descriptor["data"]})
+                # The request default is a discovery timeout, not the action's
+                # lifetime. Slow native reset/step callbacks retain their
+                # original deadline; retries keep the same request identity.
+                return await self.request({"op": "set", "data": descriptor["data"]},
+                    timeout=max(0., (envelope.deadline_ns-time.monotonic_ns())/1e9))
         except TimeoutError as error:
             # Discovery or lost acknowledgements cannot renew a command. Its
             # provider deadline has now passed; a fresh command can try again.

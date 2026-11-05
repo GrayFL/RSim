@@ -1,5 +1,6 @@
 """Graph execution, process placement and shared-source ownership."""
 from .graph import Runtime
+from .foreground import serve_component
 from .options import RuntimeOptions, RuntimePaths, ShutdownPolicy
 from .deployment import LocalPlacement, ProcessPlacement, LocalReference, SharedMemoryChannel, DDSChannel
 from .host import SharedSensor
@@ -13,3 +14,4 @@ __all__ = ['Runtime', 'LocalPlacement', 'ProcessPlacement', 'LocalReference', 'S
 __all__ += __all_sharing
 __all__ += ['RuntimeOptions', 'RuntimePaths', 'ShutdownPolicy']
 __all__ += ['ComponentFactory', 'component_ports', 'validate_component_ports']
+__all__ += ['serve_component']

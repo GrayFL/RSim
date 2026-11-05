@@ -160,3 +160,18 @@ python -m pytest -q --junitxml=assets/tests.xml
 轮速、完整姿态 IMU 与可选 2D ICP 可通过 [独立里程计组件](docs/odometry.md) 为控制与建图提供统一 Pose。原生 ROS 底盘配置见 [模板](examples/control/native_chassis.example.yaml)。
 
 [独立启动说明](docs/bringup.md) 提供底盘、WSL 控制窗口、传感器与 ROS2Topic 中继的 shell 入口：本地环境文件保存配置，tmux 管理后台运行与有序停止，默认只允许零速。
+
+## 当前进程提供共享端口
+
+`await serve_component(component, key=..., ports=..., transport=..., stopped=...)` 在调用进程中发布标准 Shared Ports，客户端仍使用 `SharedComponent`。适合需要固定主线程的低负载仿真器或设备。它复用 registry、DDS、共享数组和命令校验，不启动 supervisor/worker，不改变 SharedProvider 的多进程行为。
+
+```python
+import asyncio
+from rsim import serve_component
+
+async def serve(source):
+    stopped = asyncio.Event()
+    await serve_component(source, key='native-environment', stopped=stopped)
+```
+
+调用方负责进程存活与信号处理；`stopped.set()` 或取消关闭 Runtime、registry 和存储。已经存在同 key 的 owner 时明确报错。`on_ready(manifest)` 可同步通知启动成功。阻塞的引擎调用仍会占用该事件循环，不保证硬实时抢占。命令等待采用各自的原始 deadline，DDS 重传同一 request 不会重复执行动作；不会把 discovery 的短等待当作动作期限。

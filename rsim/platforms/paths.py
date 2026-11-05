@@ -18,7 +18,9 @@ def checked_path(path):
     # Refuse traversing symlinks/junctions, including existing parent components.
     path = Path(path).absolute()
     for candidate in (path, *path.parents):
-        if candidate.is_symlink() or candidate.is_junction():
+        # Junctions are Windows-only; Path.is_junction was added in 3.12.
+        # POSIX source deployments on 3.11 still reject every symlink parent.
+        if candidate.is_symlink() or (os.name == 'nt' and candidate.is_junction()):
             raise PermissionError(f'RSim paths must not traverse a link: {candidate}')
     return path
 

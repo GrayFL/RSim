@@ -2,6 +2,7 @@
 from importlib import import_module
 
 _EXPORTS = {
+    'serve_component': ('rsim.runtime.foreground', 'serve_component'),
     'SharedComponent': ('rsim.runtime.sharing', 'SharedComponent'),
     'SharedProvider': ('rsim.runtime.sharing', 'SharedProvider'),
     'PortSpec': ('rsim.runtime.sharing', 'PortSpec'),
@@ -166,3 +167,4 @@ __all__ += ['StageRequest', 'StageAck', 'StageFailed', 'StageExecutor', 'StageBa
 __all__ += ['RatePacer']
 __all__ += ['FrameTickPacer']
 __all__ += ['SourceCommandBound']
+__all__ += ['serve_component']
